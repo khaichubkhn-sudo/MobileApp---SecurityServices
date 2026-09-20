@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Security Alarm</string>
+    <string name="a11y_label">Security Alarm lock-screen trigger</string>
+    <string name="a11y_description">Lets Security Alarm notice when you press 1 and then the Emergency call button on the lock screen, so it can sound the alarm. It only reacts while the alarm is armed inside the app, and it does not read or store anything else.</string>
+</resources>

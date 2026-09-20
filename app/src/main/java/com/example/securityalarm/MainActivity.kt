@@ -147,7 +147,7 @@ class MainActivity : Activity() {
         val lockCard = card()
         lockCard.addView(tv("3. Lock-screen trigger", 16f, true))
         lockCard.addView(tv(
-            "While ARMED, on the locked phone: tap  1  and then tap  Emergency call.",
+            "While ARMED, press the Emergency call button on the locked phone. The alarm sounds immediately.",
             14f
         ))
         a11yView = tv("", 14f, true)
@@ -160,12 +160,6 @@ class MainActivity : Activity() {
             "Turn on \"Security Alarm lock-screen trigger\" there (Installed / Downloaded apps).",
             12f, false, GREY
         ))
-        lockCard.addView(Switch(this).apply {
-            text = "Also trigger inside the emergency dialer:\n1, then the green call button"
-            isChecked = prefs.dialerPath
-            setOnCheckedChangeListener { _, c -> prefs.dialerPath = c }
-            gap(this)
-        })
         val kwLabel = tv("Words that identify the Emergency button (comma separated, any language):", 12f, false, GREY)
         gap(kwLabel)
         lockCard.addView(kwLabel)

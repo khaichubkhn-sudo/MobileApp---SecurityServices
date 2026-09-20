@@ -6,8 +6,7 @@ import java.util.Locale
 
 /**
  * Small in-memory troubleshooting log (never written to disk, cleared when the alarm is disarmed).
- * It only ever receives entries about the trigger keys (the "1" key, the Emergency button) and
- * service start/stop - never other digits, so a PIN can never end up here.
+ * It only ever receives entries about the Emergency button and service start/stop.
  */
 object EventLog {
     private val lines = ArrayDeque<String>()

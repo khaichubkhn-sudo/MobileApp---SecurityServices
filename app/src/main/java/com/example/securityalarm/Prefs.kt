@@ -27,11 +27,6 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_speaker", true)
         set(v) { sp.edit().putBoolean("force_speaker", v).apply() }
 
-    /** Also accept "1" + green call button inside the emergency dialer screen. */
-    var dialerPath: Boolean
-        get() = sp.getBoolean("dialer_path", true)
-        set(v) { sp.edit().putBoolean("dialer_path", v).apply() }
-
     /** Comma separated words that identify the lock-screen "Emergency call" button (lower-case match). */
     var keywords: String
         get() = sp.getString("keywords", "emergency") ?: "emergency"

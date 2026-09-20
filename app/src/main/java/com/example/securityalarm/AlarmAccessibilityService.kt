@@ -3,19 +3,8 @@ package com.example.securityalarm
 import android.accessibilityservice.AccessibilityService
 import android.os.SystemClock
 import android.view.KeyEvent
+import android.view.accessibility.AccessibilityEvent
 
-/**
- * Lock-screen trigger.
- *
- * Android gives normal apps no way to hook the lock screen directly, so the only supported route
- * here is an Accessibility Service. This one is deliberately minimal:
- *  - It does NOTHING unless the alarm is armed (AlarmService is running). Disarm / close the app
- *    and it becomes completely inert.
- *  - It only watches initial volume-key presses. It never reads screen content, never stores or logs
- *    any other key, and never sends anything anywhere.
- *
- * Three consecutive presses in the same direction within 10 seconds trigger the alarm.
- */
 class AlarmAccessibilityService : AccessibilityService() {
 
     private var lastVolumeKey = 0
@@ -28,7 +17,15 @@ class AlarmAccessibilityService : AccessibilityService() {
         if (AlarmService.isArmed) {
             EventLog.add("trigger service connected")
         }
-    } // Required here
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // This service does not process accessibility events.
+    }
+
+    override fun onInterrupt() {
+        // No interruption-specific cleanup is required.
+    }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) {
@@ -71,13 +68,11 @@ class AlarmAccessibilityService : AccessibilityService() {
             AlarmService.instance?.let { alarm ->
                 fire(
                     alarm,
-                    "${
-                        if (key == KeyEvent.KEYCODE_VOLUME_UP) {
-                            "Volume Up"
-                        } else {
-                            "Volume Down"
-                        }
-                    } pressed 3 times"
+                    if (key == KeyEvent.KEYCODE_VOLUME_UP) {
+                        "Volume Up pressed 3 times"
+                    } else {
+                        "Volume Down pressed 3 times"
+                    }
                 )
             }
 
@@ -92,11 +87,6 @@ class AlarmAccessibilityService : AccessibilityService() {
         volumePressCount = 0
         firstVolumePressAt = 0L
     }
-
-    private fun isDigitKey(label: String): Boolean =
-        label.isNotEmpty() &&
-            label.length <= 8 &&
-            (label[0].isDigit() || label[0] == '*' || label[0] == '#')
 
     private fun fire(alarm: AlarmService, why: String) {
         EventLog.add("TRIGGER: $why")

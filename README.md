@@ -1,7 +1,7 @@
 # Security Alarm (Android)
 
 A loud, fixed-volume alarm you arm by hand. Plays an audio file you choose (wav, mp3, m4a, flac, ogg, ...)
-from the PLAY button, or from the locked screen by pressing **Emergency call**.
+from the PLAY button, or from the locked screen by pressing Volume Up or Volume Down three times.
 
 ## Part A - Get the APK onto your phone
 
@@ -49,20 +49,18 @@ from the PLAY button, or from the locked screen by pressing **Emergency call**.
 * **ARM ALARM** when you want protection. A quiet "Security alarm ARMED" notification appears (hidden on the lock screen).
 * Press Home/Back or lock the phone - it stays armed.
 * **Disarm** = DISARM button, swipe the app away in Recents, or "Close all". It never arms itself after a reboot.
-* **Sound it**: PLAY button, or on the locked phone press **Emergency call**
-   The alarm is triggered directly by pressing **Emergency call** on the lock screen.
+* **Sound it**: PLAY button, or on the locked phone press **Volume Up** or **Volume Down** three times
+   consecutively within 10 seconds, using the same direction.
 * **Stop it**: unlock the phone, open the app, tap **STOP**.
 
 ## Part D - Test the lock-screen trigger
-1. ARM the alarm, lock the phone. 2. On the lock screen swipe up to the PIN pad and press **Emergency call**.
+1. ARM the alarm, lock the phone. 2. Press **Volume Up** three times within 10 seconds, or press **Volume Down** three times within 10 seconds.
 3. The alarm should sound within a second. If not, unlock and look at **Troubleshooting** at the bottom of the app:
-   it lists what the service noticed ("Emergency button tapped..."). If the Emergency button appears
-   with a different name (other language / other phone brand), type that word into
-   "Words that identify the Emergency button" and test again.
+   it lists what the service noticed, including the volume press count and trigger result.
 
 ## Honest limitations
-* The lock-screen trigger is the only part Android does not officially support for normal apps. It works through an
-  Accessibility Service, so it depends on your phone brand / Android version / language. Test it (Part D).
+* The lock-screen trigger works through an Accessibility Service and depends on your phone brand / Android version.
+   Some devices may reserve volume-key handling for system functions even when the service is enabled. Test it (Part D).
 * An alarm cannot beat a powered-off phone, a killed process, or hardware volume limiters some Bluetooth devices apply
   (Force phone speaker helps). Android "Total silence" DND blocks alarms unless DND access is granted (Part B-6).
 * Loud sounds can damage hearing at close range.

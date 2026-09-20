@@ -147,7 +147,8 @@ class MainActivity : Activity() {
         val lockCard = card()
         lockCard.addView(tv("3. Lock-screen trigger", 16f, true))
         lockCard.addView(tv(
-            "While ARMED, press the Emergency call button on the locked phone. The alarm sounds immediately.",
+            "While ARMED, press Volume Up or Volume Down 3 times consecutively within 10 seconds. " +
+                "Use the same direction for all 3 presses.",
             14f
         ))
         a11yView = tv("", 14f, true)
@@ -160,20 +161,6 @@ class MainActivity : Activity() {
             "Turn on \"Security Alarm lock-screen trigger\" there (Installed / Downloaded apps).",
             12f, false, GREY
         ))
-        val kwLabel = tv("Words that identify the Emergency button (comma separated, any language):", 12f, false, GREY)
-        gap(kwLabel)
-        lockCard.addView(kwLabel)
-        lockCard.addView(EditText(this).apply {
-            setText(prefs.keywords)
-            setSingleLine(true)
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun afterTextChanged(s: Editable?) {
-                    prefs.keywords = s?.toString() ?: ""
-                }
-            })
-        })
         root.addView(lockCard)
 
         // ---- Do Not Disturb

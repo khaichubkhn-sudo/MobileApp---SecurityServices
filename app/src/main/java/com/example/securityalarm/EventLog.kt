@@ -6,7 +6,7 @@ import java.util.Locale
 
 /**
  * Small in-memory troubleshooting log (never written to disk, cleared when the alarm is disarmed).
- * It only ever receives entries about the Emergency button and service start/stop.
+ * It only ever receives entries about volume-key presses and service start/stop.
  */
 object EventLog {
     private val lines = ArrayDeque<String>()

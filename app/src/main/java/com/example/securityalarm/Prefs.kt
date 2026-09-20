@@ -27,8 +27,4 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_speaker", true)
         set(v) { sp.edit().putBoolean("force_speaker", v).apply() }
 
-    /** Comma separated words that identify the lock-screen "Emergency call" button (lower-case match). */
-    var keywords: String
-        get() = sp.getString("keywords", "emergency") ?: "emergency"
-        set(v) { sp.edit().putString("keywords", v).apply() }
 }

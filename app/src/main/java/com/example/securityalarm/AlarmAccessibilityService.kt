@@ -1,97 +1,60 @@
 package com.example.securityalarm
 
 import android.accessibilityservice.AccessibilityService
-import android.view.accessibility.AccessibilityEvent
+import android.os.SystemClock
+import android.view.KeyEvent
 
 /**
  * Lock-screen trigger.
  *
- * Android gives normal apps no way to hook the lock screen or the emergency dialer, so the only
- * supported route is an Accessibility Service. This one is deliberately minimal:
+ * Android gives normal apps no way to hook the lock screen directly, so the only supported route
+ * here is an Accessibility Service. This one is deliberately minimal:
  *  - It does NOTHING unless the alarm is armed (AlarmService is running). Disarm / close the app
  *    and it becomes completely inert.
- *  - It only looks at the label of tapped buttons. It never reads screen content, never stores or logs
- *    any other screen content, and never sends anything anywhere.
+ *  - It only watches initial volume-key presses. It never reads screen content, never stores or logs
+ *    any other key, and never sends anything anywhere.
  *
- * The Emergency button itself triggers the alarm while the alarm is armed.
+ * Three consecutive presses in the same direction within 10 seconds trigger the alarm.
  */
 class AlarmAccessibilityService : AccessibilityService() {
 
-    private enum class Kind { EMERGENCY, OTHER }
-
-    private val prefs by lazy { Prefs(this) }
-    private var emergencyScreenOpen = false
+     private var lastVolumeKey = 0
+     private var volumePressCount = 0
+     private var firstVolumePressAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         if (AlarmService.isArmed) EventLog.add("trigger service connected")
-    }
-
-    override fun onInterrupt() {}
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-        val alarm = AlarmService.instance ?: return // not armed => completely inert
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> onWindow(event)
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> onClick(event, alarm)
-        }
-    }
-
-    // ------------------------------------------------------------------ window tracking
-
-    private fun onWindow(e: AccessibilityEvent) {
-        val blob = "${e.packageName} ${e.className} ${e.text.joinToString(" ")}"
-        val isEmergency = blob.contains("emergency", ignoreCase = true)
-        if (isEmergency != emergencyScreenOpen) {
-            EventLog.add(
-                if (isEmergency) "emergency screen opened (${e.className})" else "left emergency screen"
-            )
-        }
-        emergencyScreenOpen = isEmergency
-    }
-
-    // ------------------------------------------------------------------ clicks
-
-    private fun onClick(e: AccessibilityEvent, alarm: AlarmService) {
-        val labels = ArrayList<String>()
-        e.text.forEach { it?.toString()?.trim()?.let { s -> if (s.isNotEmpty()) labels.add(s) } }
-        e.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-        collectNodeLabels(e.source, labels)
-        if (labels.isEmpty()) return
-
-        when (classify(labels)) {
-            Kind.EMERGENCY -> {
-                fire(alarm, "Emergency button")
+        override fun onKeyEvent(event: KeyEvent): Boolean {
+            if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) return false
+            if (AlarmService.instance == null) {
+                resetVolumeSequence()
+                return false
             }
-            Kind.OTHER -> {
-                // Troubleshooting only: show non-digit button labels seen on the lock screen, so a
-                // differently-named Emergency button can be identified.
-                val pkg = e.packageName?.toString() ?: ""
-                if ((emergencyScreenOpen || pkg.contains("systemui")) && !isDigitKey(labels[0])) {
-                    EventLog.add("tapped \"${labels[0].take(30)}\" [${pkg.substringAfterLast('.')}]")
-                }
+            val key = when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> event.keyCode
+                else -> return false
             }
+            val now = SystemClock.elapsedRealtime()
+            if (key != lastVolumeKey || firstVolumePressAt == 0L || now - firstVolumePressAt > WINDOW_MS) {
+                lastVolumeKey = key
+                volumePressCount = 1
+                firstVolumePressAt = now
+            } else {
+                volumePressCount++
+            }
+            EventLog.add("volume ${if (key == KeyEvent.KEYCODE_VOLUME_UP) "up" else "down"} press $volumePressCount/3")
+            if (volumePressCount >= REQUIRED_PRESSES) {
+                AlarmService.instance?.let { fire(it, "${if (key == KeyEvent.KEYCODE_VOLUME_UP) "Volume Up" else "Volume Down"} pressed 3 times") }
+                resetVolumeSequence()
+            }
+            return false
         }
-    }
 
-    private fun classify(labels: List<String>): Kind {
-        val words = prefs.keywords.lowercase().split(',', ';', '\n')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        if (labels.any { l -> val low = l.lowercase(); words.any { low.contains(it) } }) return Kind.EMERGENCY
-
-        return Kind.OTHER
-    }
-
-    private fun collectNodeLabels(node: android.view.accessibility.AccessibilityNodeInfo?, labels: MutableList<String>) {
-        var current = node
-        repeat(3) {
-            val currentNode = current ?: return@repeat
-            currentNode.text?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-            currentNode.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-            currentNode.viewIdResourceName?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-            current = currentNode.parent
+        private fun resetVolumeSequence() {
+            lastVolumeKey = 0
+            volumePressCount = 0
+            firstVolumePressAt = 0L
         }
     }
 
@@ -101,5 +64,10 @@ class AlarmAccessibilityService : AccessibilityService() {
     private fun fire(alarm: AlarmService, why: String) {
         EventLog.add("TRIGGER: $why")
         if (!AlarmService.isPlaying) alarm.startAlarm()
+    }
+
+    private companion object {
+        const val REQUIRED_PRESSES = 3
+        const val WINDOW_MS = 10_000L
     }
 }

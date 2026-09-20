@@ -1,15 +1,14 @@
 package com.example.securityalarm
 
 import android.accessibilityservice.AccessibilityService
-import android.app.KeyguardManager
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Lock-screen trigger: while the alarm is ARMED and the phone is locked, holding the Volume Down
- * button for [HOLD_MS] fires the alarm. Volume Up and unlocked presses are ignored.
+ * Volume Down trigger: while the alarm is ARMED, holding the Volume Down button for [HOLD_MS]
+ * fires the alarm regardless of the screen state (locked, unlocked or off). Volume Up is ignored.
  */
 class AlarmAccessibilityService : AccessibilityService() {
 
@@ -22,10 +21,8 @@ class AlarmAccessibilityService : AccessibilityService() {
     private val holdTrigger = object : Runnable {
         override fun run() {
             holdFired = true
-            if (AlarmService.instance != null && isScreenLocked()) {
-                AlarmService.instance?.let { alarm ->
-                    fire(alarm, "Volume Down held ${HOLD_MS / 1000}s while locked")
-                }
+            AlarmService.instance?.let { alarm ->
+                fire(alarm, "Volume Down held ${HOLD_MS / 1000}s")
             }
         }
     }
@@ -63,15 +60,6 @@ class AlarmAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // The trigger only works while the screen is locked.
-        if (!isScreenLocked()) {
-            cancelHold()
-            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                EventLog.add("volume down ignored (screen not locked)")
-            }
-            return false
-        }
-
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
                 if (event.repeatCount == 0) {
@@ -83,7 +71,7 @@ class AlarmAccessibilityService : AccessibilityService() {
                         return false
                     }
                     holdFired = false
-                    EventLog.add("volume down hold started (screen locked)")
+                    EventLog.add("volume down hold started")
                     handler.removeCallbacks(holdTrigger)
                     handler.postDelayed(holdTrigger, HOLD_MS)
                 }
@@ -108,15 +96,6 @@ class AlarmAccessibilityService : AccessibilityService() {
 
     private fun cancelHold() {
         handler.removeCallbacks(holdTrigger)
-    }
-
-    private fun isScreenLocked(): Boolean {
-        return try {
-            val km = getSystemService(KeyguardManager::class.java)
-            km != null && km.isKeyguardLocked()
-        } catch (e: Exception) {
-            false
-        }
     }
 
     private fun fire(alarm: AlarmService, why: String) {

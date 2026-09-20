@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.app.KeyguardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
@@ -48,7 +47,7 @@ class AlarmService : Service() {
          */
         private const val HOLD_GAP_MS = 800L
 
-        /** Streams whose volume the lock-screen volume keys may adjust. */
+        /** Streams whose volume the phone's volume keys may adjust. */
         private val VOLUME_STREAMS = intArrayOf(
             AudioManager.STREAM_MUSIC,
             AudioManager.STREAM_RING,
@@ -110,7 +109,7 @@ class AlarmService : Service() {
         override fun run() {
             val now = SystemClock.elapsedRealtime()
             val stillHolding = volHoldStartAt != 0L && (now - volLastDownAt) <= HOLD_GAP_MS
-            if (stillHolding && isScreenLocked() && player == null) {
+            if (stillHolding && player == null) {
                 triggerVolumeHold()
             } else {
                 resetVolumeHold()
@@ -135,7 +134,7 @@ class AlarmService : Service() {
                 // Alarm sounding: keep the chosen volume pinned.
                 enforceVolume()
             } else {
-                // Armed, silent, screen locked: Volume Down fallback detection.
+                // Armed and silent: Volume Down fallback detection.
                 detectVolumeDownHold()
             }
         }
@@ -325,7 +324,7 @@ class AlarmService : Service() {
 
     // ------------------------------------------------- volume-down fallback detection
 
-    /** Reads the current volume of every stream the lock-screen volume keys may adjust. */
+    /** Reads the current volume of every stream the volume keys may adjust. */
     private fun snapshotVolumes(): IntArray {
         val out = IntArray(VOLUME_STREAMS.size)
         for (i in VOLUME_STREAMS.indices) {
@@ -354,12 +353,6 @@ class AlarmService : Service() {
         }
         lastVolumes = current
 
-        // Keep the baseline fresh even when unlocked, but only trigger while locked.
-        if (!isScreenLocked()) {
-            resetVolumeHold()
-            return
-        }
-
         // Volume Up cancels a pending hold.
         if (up) {
             resetVolumeHold()
@@ -385,7 +378,7 @@ class AlarmService : Service() {
     }
 
     private fun triggerVolumeHold() {
-        EventLog.add("TRIGGER: Volume Down held 2s while locked (volume detection)")
+        EventLog.add("TRIGGER: Volume Down held 2s (volume detection)")
         if (!isPlaying) startAlarm()
         resetVolumeHold()
     }
@@ -394,15 +387,6 @@ class AlarmService : Service() {
         volHoldStartAt = 0L
         volLastDownAt = 0L
         handler.removeCallbacks(volHoldTrigger)
-    }
-
-    private fun isScreenLocked(): Boolean {
-        return try {
-            val km = getSystemService(KeyguardManager::class.java)
-            km != null && km.isKeyguardLocked()
-        } catch (e: Exception) {
-            false
-        }
     }
 
     // ------------------------------------------------- volume pinning
@@ -442,7 +426,7 @@ class AlarmService : Service() {
 
     /**
      * 1) Applies the preset sound volume immediately (even before the alarm plays).
-     * 2) Keeps the streams the lock-screen volume keys adjust away from zero, so a Volume Down
+     * 2) Keeps the streams the volume keys adjust away from zero, so a Volume Down
      *    press can always be detected. Skipped while a hold is in progress, otherwise the hold's own
      *    volume decrease would be undone and the detection would never see 2 seconds.
      */
@@ -453,7 +437,7 @@ class AlarmService : Service() {
             // decrease must not be undone, otherwise the 2-second hold would never be detected.
             if (volHoldStartAt == 0L) {
                 enforceVolume() // alarm stream = preset volume, un-muted
-                // Media is what the lock-screen volume keys adjust on modern Android: keep it at
+                // Media is what the volume keys adjust on modern Android: keep it at
                 // least as loud as the preset volume (never below the current level, never zero).
                 pinStreamToPreset(AudioManager.STREAM_MUSIC)
                 // Ringer, for devices that route the volume keys there: at least one step.

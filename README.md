@@ -1,7 +1,8 @@
 # Security Alarm (Android)
 
 A loud, fixed-volume alarm you arm by hand. Plays an audio file you choose (wav, mp3, m4a, flac, ogg, ...)
-from the PLAY button, or from the locked screen by holding the Volume Down button for 2 seconds.
+from the PLAY button, or by holding the Volume Down button for 2 seconds whenever the alarm is armed
+(locked, unlocked, or with the screen off).
 
 ## Part A - Get the APK onto your phone
 
@@ -36,7 +37,7 @@ from the PLAY button, or from the locked screen by holding the Volume Down butto
 2. Tap **Choose sound file...** and pick your audio file. (If you choose none, the phone's default alarm tone is used.)
 3. Set **Alarm volume** (100% = maximum). Leave "Force phone speaker" on for a loud, headphone-independent alarm.
 4. Tap **Play** once to test - then **Stop**.
-5. **Lock-screen trigger (recommended):** tap **Open Accessibility settings** > find **Security Alarm lock-screen trigger**
+5. **Volume Down trigger (recommended):** tap **Open Accessibility settings** > find **Security Alarm Volume Down trigger**
    (under Installed apps / Downloaded apps) > turn it **On** > confirm.
    * If the switch is greyed out or says "Restricted setting" (Android 13+): Settings > Apps > Security Alarm >
      top-right **&#8942;** menu > **Allow restricted settings**, then try again.
@@ -55,17 +56,18 @@ from the PLAY button, or from the locked screen by holding the Volume Down butto
 * **Volumes**: as soon as you ARM, the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
   (even before the alarm plays) and keeps the media / ringer volumes above zero, so your Volume Down trigger always has
   room to be detected. When the app closes (disarm / swipe away), the original volumes are restored.
-* **Sound it**: PLAY button, or on the locked phone press and hold **Volume Down** for 2 seconds
-   (Volume Up and unlocked presses are ignored).
-* **Stop it**: unlock the phone, open the app, tap **STOP**.
+* **Sound it**: PLAY button, or whenever the alarm is armed press and hold **Volume Down** for 2 seconds
+   (works locked, unlocked, or with the screen off; Volume Up is ignored).
+* **Stop it**: open the app, tap **STOP**.
 
-## Part D - Test the lock-screen trigger
-1. ARM the alarm, lock the phone. 2. Press and hold **Volume Down** for 2 seconds.
-3. The alarm should sound within a second. If not, unlock and look at **Troubleshooting** at the bottom of the app:
+## Part D - Test the Volume Down trigger
+1. ARM the alarm. 2. Press and hold **Volume Down** for 2 seconds (no need to lock the phone first -
+   it works whether the phone is locked, unlocked, or the screen is off).
+3. The alarm should sound within a second. If not, look at **Troubleshooting** at the bottom of the app:
    it lists what the app noticed, including the volume-press detection and the trigger result.
 
 ## Honest limitations
-* The lock-screen trigger has two independent detectors, so it is quite robust:
+* The Volume Down trigger has two independent detectors, so it is quite robust:
   1. An Accessibility Service that reads the actual Volume Down key events (most precise). This depends on
      your phone brand / Android version - some devices reserve volume-key handling even when the service is enabled.
   2. A back-up detector that watches the system volume: holding Volume Down lowers it repeatedly, which the app

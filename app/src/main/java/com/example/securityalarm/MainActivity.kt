@@ -112,7 +112,7 @@ class MainActivity : Activity() {
         soundCard.addView(tv(
             "The alarm plays on the phone's ALARM volume channel at this level, re-applied several times per " +
                 "second while it sounds. While ARMED this chosen volume is applied right away (even before the " +
-                "alarm plays) and the media volume is kept above zero so the Volume Down lock-screen trigger always " +
+                "alarm plays) and the media volume is kept above zero so the Volume Down trigger always " +
                 "works. Your original volumes are restored when the app closes. Use 100% for maximum.",
             12f, false, GREY
         ))
@@ -145,12 +145,12 @@ class MainActivity : Activity() {
         ))
         root.addView(armCard)
 
-        // ---- lock screen trigger
+        // ---- Volume Down trigger
         val lockCard = card()
-        lockCard.addView(tv("3. Lock-screen trigger", 16f, true))
+        lockCard.addView(tv("3. Volume Down trigger", 16f, true))
         lockCard.addView(tv(
-            "While ARMED and the phone is locked, press and hold the Volume Down button for 2 seconds. " +
-                "The alarm sounds as soon as it has been held for 2 seconds.",
+            "While ARMED, press and hold the Volume Down button for 2 seconds. " +
+                "The alarm sounds when it has been held for 2 seconds - locked, unlocked or with the screen off.",
             14f
         ))
         a11yView = tv("", 14f, true)
@@ -160,7 +160,7 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }.also { gap(it) })
         lockCard.addView(tv(
-            "Turn on \"Security Alarm lock-screen trigger\" there (Installed / Downloaded apps).",
+            "Turn on \"Security Alarm Volume Down trigger\" there (Installed / Downloaded apps).",
             12f, false, GREY
         ))
         root.addView(lockCard)

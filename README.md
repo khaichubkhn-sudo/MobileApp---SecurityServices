@@ -52,6 +52,9 @@ from the PLAY button, or from the locked screen by holding the Volume Down butto
 * **ARM ALARM** when you want protection. A quiet "Security alarm ARMED" notification appears (hidden on the lock screen).
 * Press Home/Back or lock the phone - it stays armed.
 * **Disarm** = DISARM button, swipe the app away in Recents, or "Close all". It never arms itself after a reboot.
+* **Volumes**: as soon as you ARM, the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
+  (even before the alarm plays) and keeps the media / ringer volumes above zero, so your Volume Down trigger always has
+  room to be detected. When the app closes (disarm / swipe away), the original volumes are restored.
 * **Sound it**: PLAY button, or on the locked phone press and hold **Volume Down** for 2 seconds
    (Volume Up and unlocked presses are ignored).
 * **Stop it**: unlock the phone, open the app, tap **STOP**.
@@ -66,8 +69,9 @@ from the PLAY button, or from the locked screen by holding the Volume Down butto
   1. An Accessibility Service that reads the actual Volume Down key events (most precise). This depends on
      your phone brand / Android version - some devices reserve volume-key handling even when the service is enabled.
   2. A back-up detector that watches the system volume: holding Volume Down lowers it repeatedly, which the app
-     sees even without accessibility. This one can't fire if the volume is already at its minimum (no room to go down),
-     and a single short press is not enough (it must be a 2-second hold).
+     sees even without accessibility. While armed the app keeps the media volume at your chosen Alarm volume level
+     and the ringer above zero, so this detector normally has room to work. A single short press is still not
+     enough (it must be a 2-second hold).
 * An alarm cannot beat a powered-off phone, a killed process, or hardware volume limiters some Bluetooth devices apply
   (Force phone speaker helps). Android "Total silence" DND blocks alarms unless DND access is granted (Part B-6).
 * Loud sounds can damage hearing at close range.

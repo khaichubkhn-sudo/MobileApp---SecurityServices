@@ -110,8 +110,10 @@ class MainActivity : Activity() {
         }
         soundCard.addView(seek)
         soundCard.addView(tv(
-            "The alarm plays on the phone's ALARM volume channel and this level is re-applied several times per " +
-                "second while it sounds, so volume buttons or other sound settings cannot lower it. Use 100% for maximum.",
+            "The alarm plays on the phone's ALARM volume channel at this level, re-applied several times per " +
+                "second while it sounds. While ARMED this chosen volume is applied right away (even before the " +
+                "alarm plays) and the media volume is kept above zero so the Volume Down lock-screen trigger always " +
+                "works. Your original volumes are restored when the app closes. Use 100% for maximum.",
             12f, false, GREY
         ))
         soundCard.addView(Switch(this).apply {

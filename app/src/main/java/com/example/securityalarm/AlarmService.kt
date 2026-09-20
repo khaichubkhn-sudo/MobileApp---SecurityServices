@@ -57,6 +57,9 @@ class AlarmService : Service() {
             AudioManager.STREAM_NOTIFICATION
         )
 
+        /** How often the volume pin re-applies the preset / non-zero volumes while armed. */
+        private const val VOLUME_PIN_MS = 500L
+
         @Volatile
         var instance: AlarmService? = null
             private set
@@ -71,6 +74,31 @@ class AlarmService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var audio: AudioManager
     private lateinit var prefs: Prefs
+
+    // ------------------------------------------------- volume pinning (never silent while armed)
+    private var volumesSaved = false
+    private var origAlarmVolume = -1
+    private var origMusicVolume = -1
+    private var origRingVolume = -1
+    private var origAlarmMuted = false
+    private var origMusicMuted = false
+    private var origRingMuted = false
+
+    /**
+     * While armed, keeps the preset sound volume applied on the alarm/media streams and makes sure
+     * the streams the volume keys adjust are never zero, so a Volume Down press is always detected.
+     * Unarmed run over by [onDestroy] where the original volumes are restored.
+     */
+    private val volumePin = object : Runnable {
+        override fun run() {
+            // Skip while the alarm is sounding (the volume guard pins the alarm stream instead),
+            // but always re-schedule so pinning resumes once the sound stops.
+            if (player == null) {
+                pinVolumes()
+            }
+            handler.postDelayed(this, VOLUME_PIN_MS)
+        }
+    }
 
     // ------------------------------------------------- volume-down fallback detection
     private var lastVolumes = intArrayOf()
@@ -125,6 +153,11 @@ class AlarmService : Service() {
         lastVolumes = snapshotVolumes()
         createChannel()
         contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver)
+
+        // Apply the preset volume right away (even before any sound plays) and keep it non-zero.
+        saveOriginalsIfNeeded()
+        pinVolumes()
+        handler.post(volumePin)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -149,6 +182,8 @@ class AlarmService : Service() {
     override fun onDestroy() {
         stopSound(updateNotification = false)
         resetVolumeHold()
+        handler.removeCallbacks(volumePin)
+        restoreVolumes()
         try {
             contentResolver.unregisterContentObserver(volumeObserver)
         } catch (e: Exception) {
@@ -367,6 +402,116 @@ class AlarmService : Service() {
             km != null && km.isKeyguardLocked()
         } catch (e: Exception) {
             false
+        }
+    }
+
+    // ------------------------------------------------- volume pinning
+
+    private fun preferredVolume(stream: Int): Int {
+        val max = audio.getStreamMaxVolume(stream)
+        if (max <= 0) return 1
+        return (max * prefs.volumePct / 100f).roundToInt().coerceIn(1, max)
+    }
+
+    /** Copies the current volumes/mute states once, so they can be restored when the app closes. */
+    private fun saveOriginalsIfNeeded() {
+        if (volumesSaved) return
+        origAlarmVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
+        origMusicVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+        origRingVolume = audio.getStreamVolume(AudioManager.STREAM_RING)
+        origAlarmMuted = try {
+            audio.isStreamMute(AudioManager.STREAM_ALARM)
+        } catch (e: Exception) {
+            false
+        }
+        origMusicMuted = try {
+            audio.isStreamMute(AudioManager.STREAM_MUSIC)
+        } catch (e: Exception) {
+            false
+        }
+        origRingMuted = try {
+            audio.isStreamMute(AudioManager.STREAM_RING)
+        } catch (e: Exception) {
+            false
+        }
+        volumesSaved = true
+        EventLog.add(
+            "volumes saved (alarm=$origAlarmVolume music=$origMusicVolume ring=$origRingVolume)"
+        )
+    }
+
+    /**
+     * 1) Applies the preset sound volume immediately (even before the alarm plays).
+     * 2) Keeps the streams the lock-screen volume keys adjust away from zero, so a Volume Down
+     *    press can always be detected. Skipped while a hold is in progress, otherwise the hold's own
+     *    volume decrease would be undone and the detection would never see 2 seconds.
+     */
+    private fun pinVolumes() {
+        saveOriginalsIfNeeded()
+        try {
+            // Skipped entirely while a Volume Down hold is in progress: the hold's own volume
+            // decrease must not be undone, otherwise the 2-second hold would never be detected.
+            if (volHoldStartAt == 0L) {
+                enforceVolume() // alarm stream = preset volume, un-muted
+                // Media is what the lock-screen volume keys adjust on modern Android: keep it at
+                // least as loud as the preset volume (never below the current level, never zero).
+                pinStreamToPreset(AudioManager.STREAM_MUSIC)
+                // Ringer, for devices that route the volume keys there: at least one step.
+                pinStreamNonZero(AudioManager.STREAM_RING)
+            }
+        } catch (e: SecurityException) {
+            // Some phones refuse volume changes while Do Not Disturb is active and no DND access was granted.
+        }
+    }
+
+    /** Raises a stream to at least the preset volume percentage (never below its current level). */
+    private fun pinStreamToPreset(stream: Int) {
+        try {
+            val target = preferredVolume(stream)
+            if (audio.isStreamMute(stream)) {
+                audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
+            }
+            if (audio.getStreamVolume(stream) < target) {
+                audio.setStreamVolume(stream, target, 0)
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    /** Makes sure a stream is not muted and at least one step loud (never zero). */
+    private fun pinStreamNonZero(stream: Int) {
+        try {
+            if (audio.isStreamMute(stream)) {
+                audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
+            }
+            if (audio.getStreamVolume(stream) <= 0) {
+                audio.setStreamVolume(stream, 1, 0)
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    /** Restores the volumes/mute states that were in place before the app was armed. */
+    private fun restoreVolumes() {
+        if (!volumesSaved) return
+        restoreStream(AudioManager.STREAM_ALARM, origAlarmVolume, origAlarmMuted)
+        restoreStream(AudioManager.STREAM_MUSIC, origMusicVolume, origMusicMuted)
+        restoreStream(AudioManager.STREAM_RING, origRingVolume, origRingMuted)
+        volumesSaved = false
+        EventLog.add(
+            "volumes restored (alarm=$origAlarmVolume music=$origMusicVolume ring=$origRingVolume)"
+        )
+    }
+
+    private fun restoreStream(stream: Int, volume: Int, wasMuted: Boolean) {
+        try {
+            if (volume >= 0) audio.setStreamVolume(stream, volume, 0)
+            val mutedNow = audio.isStreamMute(stream)
+            when {
+                wasMuted && !mutedNow -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
+                !wasMuted && mutedNow -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
+            }
+        } catch (e: Exception) {
         }
     }
 

@@ -34,7 +34,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build debug APK
-        run: 
+        run: |
           chmod +x ./gradlew
           ./gradlew :app:assembleDebug --no-daemon --stacktrace --info
 

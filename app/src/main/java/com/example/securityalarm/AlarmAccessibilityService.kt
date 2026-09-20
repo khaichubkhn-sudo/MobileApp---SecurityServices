@@ -17,7 +17,7 @@ import android.view.accessibility.AccessibilityEvent
  */
 class AlarmAccessibilityService : AccessibilityService() {
 
-     private enum class Kind { EMERGENCY, OTHER }
+    private enum class Kind { EMERGENCY, OTHER }
 
     private val prefs by lazy { Prefs(this) }
     private var emergencyScreenOpen = false
@@ -57,6 +57,7 @@ class AlarmAccessibilityService : AccessibilityService() {
         val labels = ArrayList<String>()
         e.text.forEach { it?.toString()?.trim()?.let { s -> if (s.isNotEmpty()) labels.add(s) } }
         e.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+        collectNodeLabels(e.source, labels)
         if (labels.isEmpty()) return
 
         when (classify(labels)) {
@@ -81,6 +82,17 @@ class AlarmAccessibilityService : AccessibilityService() {
         if (labels.any { l -> val low = l.lowercase(); words.any { low.contains(it) } }) return Kind.EMERGENCY
 
         return Kind.OTHER
+    }
+
+    private fun collectNodeLabels(node: android.view.accessibility.AccessibilityNodeInfo?, labels: MutableList<String>) {
+        var current = node
+        repeat(3) {
+            if (current == null) return
+            current.text?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+            current.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+            current.viewIdResourceName?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+            current = current.parent
+        }
     }
 
     private fun isDigitKey(label: String): Boolean =

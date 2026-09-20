@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.KeyguardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
@@ -20,6 +21,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import kotlin.math.roundToInt
 
@@ -37,6 +39,24 @@ class AlarmService : Service() {
         private const val CHANNEL_ID = "alarm_status"
         private const val NOTIF_ID = 1001
 
+        /** How long Volume Down must be held (fallback volume-based detection). */
+        private const val HOLD_MS = 2_000L
+
+        /**
+         * Longest pause between volume decreases that still counts as one continuous hold.
+         * Must be comfortably larger than the OS key-repeat delay (~500 ms) but smaller than HOLD_MS.
+         */
+        private const val HOLD_GAP_MS = 800L
+
+        /** Streams whose volume the lock-screen volume keys may adjust. */
+        private val VOLUME_STREAMS = intArrayOf(
+            AudioManager.STREAM_MUSIC,
+            AudioManager.STREAM_RING,
+            AudioManager.STREAM_ALARM,
+            AudioManager.STREAM_SYSTEM,
+            AudioManager.STREAM_NOTIFICATION
+        )
+
         @Volatile
         var instance: AlarmService? = null
             private set
@@ -52,6 +72,24 @@ class AlarmService : Service() {
     private lateinit var audio: AudioManager
     private lateinit var prefs: Prefs
 
+    // ------------------------------------------------- volume-down fallback detection
+    private var lastVolumes = intArrayOf()
+    private var volHoldStartAt = 0L
+    private var volLastDownAt = 0L
+
+    /** Fires the alarm once the volume-based Volume Down hold has lasted HOLD_MS. */
+    private val volHoldTrigger = object : Runnable {
+        override fun run() {
+            val now = SystemClock.elapsedRealtime()
+            val stillHolding = volHoldStartAt != 0L && (now - volLastDownAt) <= HOLD_GAP_MS
+            if (stillHolding && isScreenLocked() && player == null) {
+                triggerVolumeHold()
+            } else {
+                resetVolumeHold()
+            }
+        }
+    }
+
     /** Re-applies the chosen volume 4x per second while the sound is playing. */
     private val volumeGuard = object : Runnable {
         override fun run() {
@@ -65,7 +103,13 @@ class AlarmService : Service() {
     /** Fires immediately when anybody (volume keys, settings, other apps) changes a volume. */
     private val volumeObserver = object : ContentObserver(handler) {
         override fun onChange(selfChange: Boolean) {
-            if (player != null) enforceVolume()
+            if (player != null) {
+                // Alarm sounding: keep the chosen volume pinned.
+                enforceVolume()
+            } else {
+                // Armed, silent, screen locked: Volume Down fallback detection.
+                detectVolumeDownHold()
+            }
         }
     }
 
@@ -78,6 +122,7 @@ class AlarmService : Service() {
         prefs = Prefs(this)
         EventLog.clear()
         EventLog.add("armed")
+        lastVolumes = snapshotVolumes()
         createChannel()
         contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver)
     }
@@ -103,6 +148,7 @@ class AlarmService : Service() {
 
     override fun onDestroy() {
         stopSound(updateNotification = false)
+        resetVolumeHold()
         try {
             contentResolver.unregisterContentObserver(volumeObserver)
         } catch (e: Exception) {
@@ -117,6 +163,7 @@ class AlarmService : Service() {
     /** Start (or restart) the alarm sound. Safe to call repeatedly. */
     fun startAlarm() {
         stopSound(updateNotification = false)
+        resetVolumeHold() // no stale hold detection once the alarm is sounding
         overrideDoNotDisturb()
         enforceVolume()
         requestFocus()
@@ -238,6 +285,88 @@ class AlarmService : Service() {
             }
         } catch (e: SecurityException) {
             // Some phones refuse volume changes while Do Not Disturb is active and no DND access was granted.
+        }
+    }
+
+    // ------------------------------------------------- volume-down fallback detection
+
+    /** Reads the current volume of every stream the lock-screen volume keys may adjust. */
+    private fun snapshotVolumes(): IntArray {
+        val out = IntArray(VOLUME_STREAMS.size)
+        for (i in VOLUME_STREAMS.indices) {
+            out[i] = audio.getStreamVolume(VOLUME_STREAMS[i])
+        }
+        return out
+    }
+
+    /**
+     * Fallback trigger that needs no accessibility permission: it watches the volume settings.
+     * Holding Volume Down makes the system lower the volume repeatedly (key auto-repeat), and the
+     * ContentObserver fires on each change. This detects a sustained Volume Down hold of HOLD_MS.
+     */
+    private fun detectVolumeDownHold() {
+        val now = SystemClock.elapsedRealtime()
+        val current = snapshotVolumes()
+
+        var down = false
+        var up = false
+        if (lastVolumes.size == current.size) {
+            for (i in current.indices) {
+                val prev = lastVolumes[i]
+                if (current[i] < prev) down = true
+                else if (current[i] > prev) up = true
+            }
+        }
+        lastVolumes = current
+
+        // Keep the baseline fresh even when unlocked, but only trigger while locked.
+        if (!isScreenLocked()) {
+            resetVolumeHold()
+            return
+        }
+
+        // Volume Up cancels a pending hold.
+        if (up) {
+            resetVolumeHold()
+            return
+        }
+        if (!down) return
+
+        // A Volume Down step. A long gap means a fresh press; otherwise the hold continues.
+        if (volHoldStartAt == 0L || now - volLastDownAt > HOLD_GAP_MS) {
+            volHoldStartAt = now
+        }
+        volLastDownAt = now
+
+        EventLog.add("volume down detected (hold ${(now - volHoldStartAt) / 1000}s)")
+
+        if (now - volHoldStartAt >= HOLD_MS) {
+            triggerVolumeHold()
+            return
+        }
+
+        handler.removeCallbacks(volHoldTrigger)
+        handler.postDelayed(volHoldTrigger, volHoldStartAt + HOLD_MS - now)
+    }
+
+    private fun triggerVolumeHold() {
+        EventLog.add("TRIGGER: Volume Down held 2s while locked (volume detection)")
+        if (!isPlaying) startAlarm()
+        resetVolumeHold()
+    }
+
+    private fun resetVolumeHold() {
+        volHoldStartAt = 0L
+        volLastDownAt = 0L
+        handler.removeCallbacks(volHoldTrigger)
+    }
+
+    private fun isScreenLocked(): Boolean {
+        return try {
+            val km = getSystemService(KeyguardManager::class.java)
+            km != null && km.isKeyguardLocked()
+        } catch (e: Exception) {
+            false
         }
     }
 

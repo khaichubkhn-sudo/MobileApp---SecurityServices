@@ -36,10 +36,13 @@ from the PLAY button, or from the locked screen by holding the Volume Down butto
 2. Tap **Choose sound file...** and pick your audio file. (If you choose none, the phone's default alarm tone is used.)
 3. Set **Alarm volume** (100% = maximum). Leave "Force phone speaker" on for a loud, headphone-independent alarm.
 4. Tap **Play** once to test - then **Stop**.
-5. **Lock-screen trigger:** tap **Open Accessibility settings** > find **Security Alarm lock-screen trigger**
+5. **Lock-screen trigger (recommended):** tap **Open Accessibility settings** > find **Security Alarm lock-screen trigger**
    (under Installed apps / Downloaded apps) > turn it **On** > confirm.
    * If the switch is greyed out or says "Restricted setting" (Android 13+): Settings > Apps > Security Alarm >
      top-right **&#8942;** menu > **Allow restricted settings**, then try again.
+   * The accessibility service gives the most precise Volume Down detection. This app also has a back-up
+     detector that watches the system volume (no accessibility needed), so the trigger usually works even on
+     phones whose accessibility key-handling is unreliable - but enabling it is still strongly recommended.
 6. Optional: tap **Allow override of Do Not Disturb** and enable Security Alarm, so the alarm also sounds in
    "Total silence"/DND.
 7. Recommended so the phone doesn't stop the armed app in the background:
@@ -56,11 +59,15 @@ from the PLAY button, or from the locked screen by holding the Volume Down butto
 ## Part D - Test the lock-screen trigger
 1. ARM the alarm, lock the phone. 2. Press and hold **Volume Down** for 2 seconds.
 3. The alarm should sound within a second. If not, unlock and look at **Troubleshooting** at the bottom of the app:
-   it lists what the service noticed, including whether the hold was seen and the trigger result.
+   it lists what the app noticed, including the volume-press detection and the trigger result.
 
 ## Honest limitations
-* The lock-screen trigger works through an Accessibility Service and depends on your phone brand / Android version.
-   Some devices may reserve volume-key handling for system functions even when the service is enabled. Test it (Part D).
+* The lock-screen trigger has two independent detectors, so it is quite robust:
+  1. An Accessibility Service that reads the actual Volume Down key events (most precise). This depends on
+     your phone brand / Android version - some devices reserve volume-key handling even when the service is enabled.
+  2. A back-up detector that watches the system volume: holding Volume Down lowers it repeatedly, which the app
+     sees even without accessibility. This one can't fire if the volume is already at its minimum (no room to go down),
+     and a single short press is not enough (it must be a 2-second hold).
 * An alarm cannot beat a powered-off phone, a killed process, or hardware volume limiters some Bluetooth devices apply
   (Force phone speaker helps). Android "Total silence" DND blocks alarms unless DND access is granted (Part B-6).
 * Loud sounds can damage hearing at close range.

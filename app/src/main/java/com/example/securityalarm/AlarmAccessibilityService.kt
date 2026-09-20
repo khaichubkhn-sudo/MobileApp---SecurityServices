@@ -87,11 +87,11 @@ class AlarmAccessibilityService : AccessibilityService() {
     private fun collectNodeLabels(node: android.view.accessibility.AccessibilityNodeInfo?, labels: MutableList<String>) {
         var current = node
         repeat(3) {
-            if (current == null) return
-            current.text?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-            current.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-            current.viewIdResourceName?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
-            current = current.parent
+            val currentNode = current ?: return@repeat
+            currentNode.text?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+            currentNode.contentDescription?.toString()?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+            currentNode.viewIdResourceName?.trim()?.let { if (it.isNotEmpty()) labels.add(it) }
+            current = currentNode.parent
         }
     }
 

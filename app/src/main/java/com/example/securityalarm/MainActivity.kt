@@ -147,8 +147,8 @@ class MainActivity : Activity() {
         val lockCard = card()
         lockCard.addView(tv("3. Lock-screen trigger", 16f, true))
         lockCard.addView(tv(
-            "While ARMED, press the Volume Up or Volume Down buttons at least 3 times within 10 seconds. " +
-                "Any combination of Volume Up and Volume Down presses counts.",
+            "While ARMED and the phone is locked, press and hold the Volume Down button for 2 seconds. " +
+                "The alarm sounds as soon as it has been held for 2 seconds.",
             14f
         ))
         a11yView = tv("", 14f, true)

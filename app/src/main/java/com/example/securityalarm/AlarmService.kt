@@ -121,15 +121,10 @@ class AlarmService : Service() {
         enforceVolume()
         requestFocus()
 
-        val chosen = prefs.soundUri?.let { Uri.parse(it) }
-        val ok = chosen != null && play(chosen)
-        if (!ok) {
-            // Never stay silent: fall back to the phone's default alarm tone.
-            play(defaultAlarmUri())
-        }
+        val ok = playBestAvailable()
         handler.post(volumeGuard)
         refreshNotification()
-        EventLog.add("SOUND STARTED")
+        EventLog.add(if (ok) "SOUND STARTED" else "SOUND FAILED")
     }
 
     fun stopSound(updateNotification: Boolean = true) {
@@ -163,6 +158,27 @@ class AlarmService : Service() {
     private fun defaultAlarmUri(): Uri =
         RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+
+    /** The tone bundled inside the APK, so a sound is guaranteed even if every other source fails. */
+    private fun bundledAlarmUri(): Uri =
+        Uri.parse("android.resource://$packageName/${R.raw.alarm_fallback}")
+
+    /**
+     * Tries the user's chosen sound, then the phone's default alarm tone, then the bundled tone.
+     * Returns true as soon as one of them starts playing, so the alarm is never silent.
+     */
+    private fun playBestAvailable(): Boolean {
+        val candidates = listOfNotNull(
+            prefs.soundUri?.let { Uri.parse(it) },
+            defaultAlarmUri(),
+            bundledAlarmUri()
+        )
+        for (uri in candidates) {
+            if (play(uri)) return true
+            EventLog.add("sound source failed, trying next")
+        }
+        return false
+    }
 
     private fun play(uri: Uri): Boolean {
         var mp: MediaPlayer? = null
@@ -201,7 +217,8 @@ class AlarmService : Service() {
             }
         }
         player = null
-        play(defaultAlarmUri())
+        // Try another source; the bundled tone is the guaranteed last resort.
+        playBestAvailable()
     }
 
     private fun speaker(): AudioDeviceInfo? =

@@ -1,7 +1,8 @@
 # Security Alarm (Android)
 
 A loud, fixed-volume alarm you arm by hand. Plays an audio file you choose (wav, mp3, m4a, flac, ogg, ...)
-from the PLAY button, or from the locked screen by pressing Volume Up or Volume Down three times.
+from the PLAY button, or from the locked screen by pressing Volume Up / Volume Down at least three times
+(any combination within 10 seconds).
 
 ## Part A - Get the APK onto your phone
 
@@ -49,12 +50,13 @@ from the PLAY button, or from the locked screen by pressing Volume Up or Volume 
 * **ARM ALARM** when you want protection. A quiet "Security alarm ARMED" notification appears (hidden on the lock screen).
 * Press Home/Back or lock the phone - it stays armed.
 * **Disarm** = DISARM button, swipe the app away in Recents, or "Close all". It never arms itself after a reboot.
-* **Sound it**: PLAY button, or on the locked phone press **Volume Up** or **Volume Down** three times
-   consecutively within 10 seconds, using the same direction.
+* **Sound it**: PLAY button, or on the locked phone press **Volume Up** / **Volume Down** at least three times
+   within 10 seconds (any combination of the two buttons counts).
 * **Stop it**: unlock the phone, open the app, tap **STOP**.
 
 ## Part D - Test the lock-screen trigger
-1. ARM the alarm, lock the phone. 2. Press **Volume Up** three times within 10 seconds, or press **Volume Down** three times within 10 seconds.
+1. ARM the alarm, lock the phone. 2. Press the **Volume Up** / **Volume Down** buttons at least three times within
+   10 seconds (any combination of up and down counts).
 3. The alarm should sound within a second. If not, unlock and look at **Troubleshooting** at the bottom of the app:
    it lists what the service noticed, including the volume press count and trigger result.
 

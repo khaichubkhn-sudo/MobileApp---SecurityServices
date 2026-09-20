@@ -7,7 +7,6 @@ import android.view.accessibility.AccessibilityEvent
 
 class AlarmAccessibilityService : AccessibilityService() {
 
-    private var lastVolumeKey = 0
     private var volumePressCount = 0
     private var firstVolumePressAt = 0L
 
@@ -32,48 +31,33 @@ class AlarmAccessibilityService : AccessibilityService() {
             return false
         }
 
+        val key = event.keyCode
+        if (key != KeyEvent.KEYCODE_VOLUME_UP && key != KeyEvent.KEYCODE_VOLUME_DOWN) {
+            return false
+        }
+
         if (AlarmService.instance == null) {
             resetVolumeSequence()
             return false
         }
 
-        val key = when (event.keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP,
-            KeyEvent.KEYCODE_VOLUME_DOWN -> event.keyCode
-
-            else -> return false
-        }
-
         val now = SystemClock.elapsedRealtime()
+        val direction = if (key == KeyEvent.KEYCODE_VOLUME_UP) "up" else "down"
 
-        if (
-            key != lastVolumeKey ||
-            firstVolumePressAt == 0L ||
-            now - firstVolumePressAt > WINDOW_MS
-        ) {
-            lastVolumeKey = key
+        // Any consecutive Volume Up/Down press counts (mixing the two buttons is fine),
+        // as long as the whole sequence happens inside a 10-second window.
+        if (volumePressCount == 0 || now - firstVolumePressAt > WINDOW_MS) {
             volumePressCount = 1
             firstVolumePressAt = now
         } else {
             volumePressCount++
         }
 
-        EventLog.add(
-            "volume ${
-                if (key == KeyEvent.KEYCODE_VOLUME_UP) "up" else "down"
-            } press $volumePressCount/3"
-        )
+        EventLog.add("volume $direction press $volumePressCount/$REQUIRED_PRESSES")
 
         if (volumePressCount >= REQUIRED_PRESSES) {
             AlarmService.instance?.let { alarm ->
-                fire(
-                    alarm,
-                    if (key == KeyEvent.KEYCODE_VOLUME_UP) {
-                        "Volume Up pressed 3 times"
-                    } else {
-                        "Volume Down pressed 3 times"
-                    }
-                )
+                fire(alarm, "Volume buttons pressed $REQUIRED_PRESSES times within 10s")
             }
 
             resetVolumeSequence()
@@ -83,7 +67,6 @@ class AlarmAccessibilityService : AccessibilityService() {
     }
 
     private fun resetVolumeSequence() {
-        lastVolumeKey = 0
         volumePressCount = 0
         firstVolumePressAt = 0L
     }

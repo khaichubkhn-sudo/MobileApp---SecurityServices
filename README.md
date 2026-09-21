@@ -50,13 +50,14 @@ recording, according to the selected action (locked, unlocked, or with the scree
    Settings > Apps > Security Services > Battery > **Unrestricted** (Samsung: also "Never sleeping apps").
 
 8. To use voice recording, select **Start microphone voice recording** in the Volume Down action section.
-   When you do, Wear OS asks for the microphone permission - allow the dialog. If you ever need it again (or
-   dismissed it before), tap **Grant microphone permissions…** in the app; the status line above it shows whether
-   the permission is granted. Grant it **before** you ARM: the alarm's background service only gets the microphone
-   type when the permission is already granted at arm time, so if you grant it while armed, press **DISARM** and
-   **ARM ALARM** again. Choose a folder if needed; otherwise files are saved under **Music/Security Services**.
-   Tap **STOP RECORDING** in the app to finish the current M4A file. Recording also stops when the file reaches
-   300 MB or the app is closed.
+   Select it, and the phone asks once for the microphone **permission - allow the dialog**. If you ever need it
+   again (or dismissed it before), tap **Grant microphone permissions…** in the app; the status line above it
+   shows whether the permission is granted. **ARM ALARM** waits for the permission when recording is selected,
+   and granting it while armed re-arms automatically (the background service must start *with* the microphone
+   type, it cannot be added later). **START RECORDING now (test)** lets you verify the mic pipeline from the app
+   while armed. Choose a folder if needed; otherwise files are saved under **Music/Security Services** (with a
+   fallback folder if the phone refuses that location). Tap **STOP RECORDING** in the app to finish the current
+   M4A file. Recording also stops when the file reaches 300 MB or the app is closed.
 
 ## Part C - Daily use
 * **ARM ALARM** when you want protection. A quiet "Security Services ARMED" notification appears (hidden on the lock screen).

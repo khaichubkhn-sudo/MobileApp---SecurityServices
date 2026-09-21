@@ -389,38 +389,61 @@ class AlarmService : Service() {
 
     private fun createRecordingOutput(): java.io.FileDescriptor {
         val name = "voice_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a"
+        // 1) The player-chosen folder (Storage Access Framework tree), if one was picked.
         val treeUri = prefs.recordingTreeUri?.let { Uri.parse(it) }
         if (treeUri != null) {
-            val uri = DocumentsContract.createDocument(contentResolver, treeUri, "audio/mp4", name)
-                ?: throw IllegalStateException("Could not create recording file")
-            recordingUri = uri
-            recordingFd = contentResolver.openFileDescriptor(uri, "w")
-                ?: throw IllegalStateException("Could not open recording file")
-            return recordingFd!!.fileDescriptor
-        }
-        if (Build.VERSION.SDK_INT >= 29) {
-            val values = android.content.ContentValues().apply {
-                put(MediaStore.Audio.Media.DISPLAY_NAME, name)
-                put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
-                put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Security Services")
-                // Keep the file visible while MediaRecorder appends to it. A pending item is
-                // hidden from file browsers until recording stops.
-                put(MediaStore.Audio.Media.IS_PENDING, 0)
+            try {
+                val uri = DocumentsContract.createDocument(contentResolver, treeUri, "audio/mp4", name)
+                    ?: throw IllegalStateException("createDocument returned null")
+                val fd = contentResolver.openFileDescriptor(uri, "w")
+                    ?: throw IllegalStateException("openFileDescriptor returned null")
+                recordingUri = uri
+                recordingFd = fd
+                return fd.fileDescriptor
+            } catch (e: Exception) {
+                EventLog.add("recording output failed on chosen folder: ${e.message}; using default location")
+                recordingUri = null
+                recordingFd = null
             }
-            recordingUri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("Could not create Music recording")
-            recordingFd = contentResolver.openFileDescriptor(recordingUri!!, "w")
-                ?: throw IllegalStateException("Could not open Music recording")
-            return recordingFd!!.fileDescriptor
         }
+        // 2) Default location through MediaStore. Some Wear OS builds have no writable "Music"
+        //    collection, so any failure here falls through to app-specific storage below instead
+        //    of silently stopping recording.
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(MediaStore.Audio.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
+                    put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Security Services")
+                    put(MediaStore.Audio.Media.IS_PENDING, 0)
+                }
+                val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("insert returned null")
+                val fd = contentResolver.openFileDescriptor(uri, "w")
+                    ?: throw IllegalStateException("openFileDescriptor returned null")
+                recordingUri = uri
+                recordingFd = fd
+                return fd.fileDescriptor
+            } catch (e: Exception) {
+                EventLog.add("recording output failed on Music/MediaStore: ${e.message}; using app storage")
+                recordingUri = null
+                recordingFd = null
+            }
+        }
+        // 3) Public Music storage as a plain folder: WRITE_EXTERNAL_STORAGE is auto-granted to this
+        //    targetSdk-34 build (and was requested up front on older API levels), so recording
+        //    still works even if the MediaStore collection itself rejected the insert.
         val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Security Services")
-        if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Could not create Music folder")
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("Could not create ${directory.absolutePath}")
+        }
         val file = File(directory, name)
         recordingFile = file
         recordingFd = android.os.ParcelFileDescriptor.open(
             file,
             android.os.ParcelFileDescriptor.MODE_CREATE or android.os.ParcelFileDescriptor.MODE_WRITE_ONLY
         )
+        EventLog.add("recording saved to ${file.absolutePath}")
         return recordingFd!!.fileDescriptor
     }
 

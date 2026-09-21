@@ -48,6 +48,13 @@ class AlarmService : Service() {
         private const val CHANNEL_ID = "alarm_status"
         private const val NOTIF_ID = 1001
 
+        /**
+         * Runtime permission Android 11+ needs before a foreground service may run with the
+         * microphone foreground type (declared in AndroidManifest.xml). Without it, starting
+         * the foreground service with the microphone type fails on targetSdk >= 30 devices.
+         */
+        private const val PERMISSION_FOREGROUND_MICROPHONE = "android.permission.FOREGROUND_SERVICE_MICROPHONE"
+
         /** How long Volume Down must be held (fallback volume-based detection). */
         private const val HOLD_MS = 2_000L
 
@@ -83,6 +90,7 @@ class AlarmService : Service() {
     private var recordingFile: File? = null
     private var recordingUri: Uri? = null
     private var recordingFd: android.os.ParcelFileDescriptor? = null
+    /** Microphone type included in the foreground service type. Set once at service start. */
     private var recordingForeground = false
     private val recordingLimitBytes = 300L * 1024L * 1024L
     private var focusRequest: AudioFocusRequest? = null
@@ -190,6 +198,13 @@ class AlarmService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
+            // Android only lets a foreground service use the microphone when the microphone type is
+            // part of the VERY FIRST startForeground() call; it cannot be added later by recalling
+            // startForeground() from the background / lock screen (the phone is already locked when
+            // the volume-down trigger fires). So include it here, whenever the runtime permission
+            // is available. The manifest declares both types via android:foregroundServiceType.
+            recordingForeground = checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
             goForeground()
         } catch (e: Exception) {
             stopSelf()
@@ -264,10 +279,20 @@ class AlarmService : Service() {
             EventLog.add("recording failed: microphone permission missing")
             return
         }
+        // Android 11+ also requires the microphone foreground-service runtime permission; without
+        // it the service was started without the microphone type and MediaRecorder cannot capture.
+        if (Build.VERSION.SDK_INT >= 29 &&
+            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("recording failed: grant the microphone foreground permission (select the record option, then allow the dialog)")
+            return
+        }
         var activeRecorder: MediaRecorder? = null
         try {
-            recordingForeground = true
-            goForeground()
+            // NOTE: no startForeground()/goForeground() here. The service already runs in the
+            // foreground with the microphone type (granted once in onStartCommand) and that call
+            // cannot be safely re-issued to change the type while the phone is locked. The
+            // notification is refreshed at the end instead.
             val output = createRecordingOutput()
             activeRecorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
             activeRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -288,15 +313,22 @@ class AlarmService : Service() {
                 activeRecorder?.reset()
             } catch (ignored: Exception) {
             }
-            activeRecorder?.release()
+            try {
+                activeRecorder?.release()
+            } catch (ignored: Exception) {
+            }
             recorder = null
-            recordingFd?.close()
+            try {
+                recordingFd?.close()
+            } catch (ignored: Exception) {
+            }
             recordingFd = null
             recordingFile = null
-            recordingUri?.let { contentResolver.delete(it, null, null) }
+            try {
+                recordingUri?.let { contentResolver.delete(it, null, null) }
+            } catch (ignored: Exception) {
+            }
             recordingUri = null
-            recordingForeground = false
-            goForeground()
         }
     }
 
@@ -324,9 +356,7 @@ class AlarmService : Service() {
         recordingFd = null
         recordingFile = null
         recordingUri = null
-        recordingForeground = false
         if (updateNotification && instance != null) {
-            goForeground()
             EventLog.add("VOICE RECORDING STOPPED")
             refreshNotification()
         }

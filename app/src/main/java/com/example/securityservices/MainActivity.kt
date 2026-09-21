@@ -44,6 +44,9 @@ class MainActivity : Activity() {
         const val GREY = 0xFF546E7A.toInt()
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+        /** Permission name as declared in AndroidManifest.xml (kept as a literal for compile safety). */
+        const val PERMISSION_FOREGROUND_MICROPHONE = "android.permission.FOREGROUND_SERVICE_MICROPHONE"
     }
 
     private lateinit var prefs: Prefs
@@ -271,6 +274,13 @@ class MainActivity : Activity() {
         val missing = mutableListOf<String>()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             missing.add(Manifest.permission.RECORD_AUDIO)
+        }
+        // Without this, starting the foreground service with the microphone type fails on
+        // Android 11+ (and is mandatory for targetSdk 34): "Starting FGS with type microphone
+        // ... requires permissions". Declaring it in the manifest is not enough on modern
+        // Android; the user must also grant the permission at runtime.
+        if (checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(PERMISSION_FOREGROUND_MICROPHONE)
         }
         if (Build.VERSION.SDK_INT <= 28 &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED

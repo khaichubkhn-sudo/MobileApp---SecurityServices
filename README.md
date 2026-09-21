@@ -71,7 +71,9 @@ recording, according to the selected action (locked, unlocked, or with the scree
   It never arms itself after a reboot.
 * **Volumes**: while armed the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
   (even before the alarm plays) and keeps the media / ringer volumes above zero, so your Volume Down trigger always has
-  room to be detected. When the app closes (swipe away), the original volumes are restored.
+  room to be detected. **When the app closes (swipe away in Recents / "Close all") the alarm, media and ringer volumes
+  are put back to exactly the levels they had before the app started.** Those pre-app levels are also stored on the
+  device, so they are still restored correctly even if Android kills the app without a clean shutdown.
 * **Sound or record**: the selected Volume Down action starts after a 2-second hold (works locked, unlocked, or
    with the screen off; Volume Up is ignored). With recording selected, the hold starts a voice recording and the
    ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.

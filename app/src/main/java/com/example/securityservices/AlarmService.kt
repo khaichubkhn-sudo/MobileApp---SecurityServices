@@ -117,6 +117,14 @@ class AlarmService : Service() {
 
     // ------------------------------------------------- volume pinning (never silent while armed)
     private var volumesSaved = false
+
+    /**
+     * Identifies this service instance inside the on-disk volume record. A re-arm can stop this
+     * instance after a new one has already written its own record, so the restore below only clears
+     * the record when it is the one this instance wrote.
+     */
+    private val volumeSessionId =
+        System.currentTimeMillis().toString() + "-" + System.identityHashCode(this)
     private var origAlarmVolume = -1
     private var origMusicVolume = -1
     private var origRingVolume = -1
@@ -221,7 +229,14 @@ class AlarmService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Backup for OEMs that deliver this callback: closing the app disarms it.
+        // Closing the app (swipe away in Recents / "Close all") must put the phone's volumes back to
+        // the levels that were in place before the app started. Do it here as well as in onDestroy(),
+        // because the process can be killed without a clean onDestroy() callback. Both volume loops
+        // stop first, otherwise the guard would re-raise the alarm volume right after the restore.
+        EventLog.add("app closed - putting the original volumes back")
+        handler.removeCallbacks(volumePin)
+        handler.removeCallbacks(volumeGuard)
+        restoreVolumes()
         disarm()
         super.onTaskRemoved(rootIntent)
     }
@@ -647,9 +662,17 @@ class AlarmService : Service() {
         return (max * prefs.volumePct / 100f).roundToInt().coerceIn(1, max)
     }
 
-    /** Copies the current volumes/mute states once, so they can be restored when the app closes. */
+    /**
+     * Copies the current volumes/mute states once, so they can be restored when the app closes.
+     * The values are also written to disk: if the process is killed before it can restore them
+     * (task swiped away, "Close all", low memory), the next start puts the phone back to its real
+     * original levels before the alarm volume is pinned for the new session.
+     */
     private fun saveOriginalsIfNeeded() {
         if (volumesSaved) return
+        // A record left behind by an earlier run that never got to restore means the phone is still
+        // at the pinned levels: put the real originals back first, then capture them for this run.
+        restoreSavedVolumesFromDisk()
         origAlarmVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
         origMusicVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
         origRingVolume = audio.getStreamVolume(AudioManager.STREAM_RING)
@@ -669,9 +692,38 @@ class AlarmService : Service() {
             false
         }
         volumesSaved = true
+        persistOriginals()
         EventLog.add(
             "volumes saved (alarm=$origAlarmVolume music=$origMusicVolume ring=$origRingVolume)"
         )
+    }
+
+    /** Writes the pre-app volume state to disk so it survives an unclean shutdown. */
+    private fun persistOriginals() {
+        prefs.savedVolumes = volumeSessionId + ";" + listOf(
+            origAlarmVolume, origMusicVolume, origRingVolume,
+            if (origAlarmMuted) 1 else 0,
+            if (origMusicMuted) 1 else 0,
+            if (origRingMuted) 1 else 0
+        ).joinToString(",")
+    }
+
+    /**
+     * Puts back the levels written by an earlier run that was killed before it could restore them
+     * (see [persistOriginals]) and clears that record. The caller then captures the restored levels
+     * as this session's originals, so the phone always ends up back at its true pre-app volumes.
+     */
+    private fun restoreSavedVolumesFromDisk() {
+        val saved = prefs.savedVolumes ?: return
+        prefs.savedVolumes = null
+        val values = saved.substringAfter(';', "")
+            .split(",")
+            .mapNotNull { it.trim().toIntOrNull() }
+        if (values.size != 6) return
+        restoreStream(AudioManager.STREAM_ALARM, values[0], values[3] == 1)
+        restoreStream(AudioManager.STREAM_MUSIC, values[1], values[4] == 1)
+        restoreStream(AudioManager.STREAM_RING, values[2], values[5] == 1)
+        EventLog.add("volumes from the previous run were put back before arming again")
     }
 
     /**
@@ -731,13 +783,19 @@ class AlarmService : Service() {
         }
     }
 
-    /** Restores the volumes/mute states that were in place before the app was armed. */
+    /**
+     * Restores the volumes/mute states that were in place before the app started and drops the
+     * on-disk record. Called when the app closes ([onTaskRemoved] / [onDestroy]); safe to call twice.
+     */
     private fun restoreVolumes() {
         if (!volumesSaved) return
         restoreStream(AudioManager.STREAM_ALARM, origAlarmVolume, origAlarmMuted)
         restoreStream(AudioManager.STREAM_MUSIC, origMusicVolume, origMusicMuted)
         restoreStream(AudioManager.STREAM_RING, origRingVolume, origRingMuted)
         volumesSaved = false
+        // Clear the on-disk record only when it is the one this instance wrote: a newer instance may
+        // already have replaced it while this (re-armed) instance was shutting down.
+        if (prefs.savedVolumes?.startsWith("$volumeSessionId;") == true) prefs.savedVolumes = null
         EventLog.add(
             "volumes restored (alarm=$origAlarmVolume music=$origMusicVolume ring=$origRingVolume)"
         )

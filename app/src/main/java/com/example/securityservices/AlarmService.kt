@@ -264,11 +264,12 @@ class AlarmService : Service() {
             EventLog.add("recording failed: microphone permission missing")
             return
         }
+        var activeRecorder: MediaRecorder? = null
         try {
             recordingForeground = true
             goForeground()
             val output = createRecordingOutput()
-            val activeRecorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
+            activeRecorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
             activeRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
             activeRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             activeRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -282,8 +283,12 @@ class AlarmService : Service() {
             EventLog.add("VOICE RECORDING STARTED")
             refreshNotification()
         } catch (e: Exception) {
-            EventLog.add("recording failed: ${e.javaClass.simpleName}")
-            recorder?.release()
+            EventLog.add("recording failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}")
+            try {
+                activeRecorder?.reset()
+            } catch (ignored: Exception) {
+            }
+            activeRecorder?.release()
             recorder = null
             recordingFd?.close()
             recordingFd = null
@@ -343,7 +348,9 @@ class AlarmService : Service() {
                 put(MediaStore.Audio.Media.DISPLAY_NAME, name)
                 put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
                 put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Security Services")
-                put(MediaStore.Audio.Media.IS_PENDING, 1)
+                // Keep the file visible while MediaRecorder appends to it. A pending item is
+                // hidden from file browsers until recording stops.
+                put(MediaStore.Audio.Media.IS_PENDING, 0)
             }
             recordingUri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("Could not create Music recording")

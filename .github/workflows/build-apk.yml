@@ -36,7 +36,18 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace --info
+          ./gradlew clean :app:compileDebugKotlin \
+            --no-daemon \
+            --no-build-cache \
+            --rerun-tasks \
+            --console=plain \
+            --stacktrace \
+            --info
+
+          ./gradlew :app:assembleDebug \
+            --no-daemon \
+            --console=plain \
+            --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:

@@ -80,11 +80,11 @@ the screen off).
    with the screen off; Volume Up is ignored). With recording selected, the hold starts a voice recording and the
    ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.
 * **Stop it**: tap **STOP RECORDING** to finish and save the voice file, or **STOP** to silence a sounding alarm.
-* **Location SMS**: select **Send current GPS location by SMS after the trigger** and enter phone numbers separated
-   by commas or new lines. Grant Location and SMS permissions when asked. The app waits for one valid location (up to
-   30 seconds), then sends one Google Maps link to each distinct number. The link and sending result are shown
-   temporarily in Troubleshooting. Android does not allow an app to silently switch on the system Location setting,
-   so Location must already be enabled on the phone.
+* **Location SMS**: select **Send current GPS location by SMS after the trigger**, enter phone numbers separated
+   by semicolons, and optionally enter message content to place before the GPS data. Grant Location and SMS
+   permissions when asked. The app waits for one valid location (up to 30 seconds), then sends one Google Maps link
+   to each distinct number. The link and sending result are shown temporarily in Troubleshooting. Android does not
+   allow an app to silently switch on the system Location setting, so Location must already be enabled on the phone.
 
 ## Part D - Test the Volume Down trigger
 1. Open the app (it arms itself), then press and hold **Volume Down** for 2 seconds (no need to lock the phone first -

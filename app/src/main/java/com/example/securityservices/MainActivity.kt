@@ -93,6 +93,7 @@ class MainActivity : Activity() {
         if (prefs.sendLocationOnVolumeDown && prefs.volumeDownAction != Prefs.ACTION_LOCATION) {
             prefs.volumeDownAction = Prefs.ACTION_LOCATION
         }
+        prefs.sendLocationOnVolumeDown = prefs.volumeDownAction == Prefs.ACTION_LOCATION
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -200,7 +201,7 @@ class MainActivity : Activity() {
         }
         actionCard.addView(actionGroup)
         val locationNumbers = EditText(this).apply {
-            hint = "Phone numbers (comma or newline separated)"
+            hint = "Phone numbers (semicolon separated)"
             filters = arrayOf(android.text.InputFilter.LengthFilter(50))
             setText(prefs.locationPhoneNumbers)
             inputType = android.text.InputType.TYPE_CLASS_PHONE or
@@ -216,6 +217,23 @@ class MainActivity : Activity() {
         }
         gap(locationNumbers)
         actionCard.addView(locationNumbers)
+        val locationSmsPrefix = EditText(this).apply {
+            hint = "SMS message content before GPS data"
+            setText(prefs.locationSmsPrefix)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    prefs.locationSmsPrefix = s?.toString() ?: ""
+                }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
+        gap(locationSmsPrefix)
+        actionCard.addView(locationSmsPrefix)
         actionCard.addView(tv(
             "The app waits for a valid location before sending one Google Maps link per number. " +
                 "Location must be enabled on the phone; Android does not allow apps to silently switch it on.",

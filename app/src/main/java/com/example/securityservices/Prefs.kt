@@ -37,8 +37,12 @@ class Prefs(context: Context) {
         set(v) { sp.edit().putBoolean("send_location_on_volume_down", v).apply() }
 
     var locationPhoneNumbers: String
-        get() = sp.getString("location_phone_numbers", "") ?: ""
+        get() = (sp.getString("location_phone_numbers", "") ?: "").take(50)
         set(v) { sp.edit().putString("location_phone_numbers", v.take(50)).apply() }
+
+    var locationSmsPrefix: String
+        get() = sp.getString("location_sms_prefix", "") ?: ""
+        set(v) { sp.edit().putString("location_sms_prefix", v).apply() }
 
     var lastLocationMessage: String
         get() = sp.getString("last_location_message", "") ?: ""

@@ -668,7 +668,7 @@ class AlarmService : Service() {
     private fun sendLocationIfConfigured() {
         if (!prefs.sendLocationOnVolumeDown) return
         val numbers = prefs.locationPhoneNumbers
-            .split(',', ';', '\n', '\r')
+            .split(';')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
@@ -709,8 +709,10 @@ class AlarmService : Service() {
                 finishLocationRequest()
                 val mapsUrl = "https://www.google.com/maps/search/?api=1&query=" +
                     "${location.latitude},${location.longitude}"
-                val message = "Security Services location: $mapsUrl " +
+                val locationData = "Security Services location: $mapsUrl " +
                     "(accuracy ${location.accuracy.roundToInt()}m)"
+                val prefix = prefs.locationSmsPrefix.trim()
+                val message = if (prefix.isEmpty()) locationData else "$prefix\n$locationData"
                 prefs.lastLocationMessage = message
                 EventLog.add("GPS DATA: ${location.latitude},${location.longitude}")
                 EventLog.add("GPS SMS test data: $mapsUrl")

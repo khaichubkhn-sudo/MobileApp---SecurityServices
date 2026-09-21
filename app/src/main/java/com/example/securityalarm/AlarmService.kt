@@ -274,7 +274,7 @@ class AlarmService : Service() {
             activeRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             activeRecorder.setAudioEncodingBitRate(128_000)
             activeRecorder.setAudioSamplingRate(44_100)
-            activeRecorder.setOutputFile(output.fileDescriptor)
+            activeRecorder.setOutputFile(output)
             activeRecorder.prepare()
             activeRecorder.start()
             recorder = activeRecorder

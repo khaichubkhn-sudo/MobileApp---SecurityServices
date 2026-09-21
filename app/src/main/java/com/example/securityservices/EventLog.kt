@@ -1,4 +1,4 @@
-package com.example.securityalarm
+package com.example.securityservices
 
 import java.text.SimpleDateFormat
 import java.util.Date

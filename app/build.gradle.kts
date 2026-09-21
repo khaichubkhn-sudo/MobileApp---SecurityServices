@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.securityalarm"
+    namespace = "com.example.securityservices"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.securityalarm"
+        applicationId = "com.example.securityservices"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

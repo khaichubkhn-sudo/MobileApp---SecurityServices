@@ -1,4 +1,4 @@
-package com.example.securityalarm
+package com.example.securityservices
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -42,9 +42,9 @@ import kotlin.math.roundToInt
 class AlarmService : Service() {
 
     companion object {
-        const val ACTION_ARM = "com.example.securityalarm.ARM"
-        const val ACTION_PLAY = "com.example.securityalarm.PLAY"
-        const val ACTION_STOP_RECORDING = "com.example.securityalarm.STOP_RECORDING"
+        const val ACTION_ARM = "com.example.securityservices.ARM"
+        const val ACTION_PLAY = "com.example.securityservices.PLAY"
+        const val ACTION_STOP_RECORDING = "com.example.securityservices.STOP_RECORDING"
         private const val CHANNEL_ID = "alarm_status"
         private const val NOTIF_ID = 1001
 

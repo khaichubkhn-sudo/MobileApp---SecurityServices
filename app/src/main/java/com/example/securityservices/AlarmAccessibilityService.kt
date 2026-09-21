@@ -1,4 +1,4 @@
-package com.example.securityalarm
+package com.example.securityservices
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Handler

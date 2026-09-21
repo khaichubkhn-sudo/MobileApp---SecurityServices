@@ -1,4 +1,4 @@
-package com.example.securityalarm
+package com.example.securityservices
 
 import android.content.Context
 

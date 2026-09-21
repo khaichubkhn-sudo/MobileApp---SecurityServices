@@ -55,12 +55,17 @@ class MainActivity : Activity() {
     /** How many times a dropped permission may be re-requested in one dialog flow (Wear OS quirk). */
     private var reRequestsRemaining = 0
 
+    /** Bounds the automatic accessibility-settings popup waits per launch. */
+    private var a11yPopupTries = 0
+
+    /** True while the app waits for the microphone dialog before its first (re-)arm. */
+    private var armAfterPermission = false
+
     private lateinit var statusView: TextView
     private lateinit var soundView: TextView
     private lateinit var recordingView: TextView
     private lateinit var micPermView: TextView
     private lateinit var volLabel: TextView
-    private lateinit var armBtn: Button
     private lateinit var playBtn: Button
     private lateinit var stopBtn: Button
     private lateinit var a11yView: TextView
@@ -118,7 +123,9 @@ class MainActivity : Activity() {
                 }
 
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
+
+                // Apply the chosen volume to a fresh, always-armed service.
+                override fun onStopTrackingTouch(sb: SeekBar?) { rearm() }
             })
         }
         soundCard.addView(seek)
@@ -132,7 +139,10 @@ class MainActivity : Activity() {
         soundCard.addView(Switch(this).apply {
             text = "Force phone speaker (ignore headphones / Bluetooth)"
             isChecked = prefs.forceSpeaker
-            setOnCheckedChangeListener { _, c -> prefs.forceSpeaker = c }
+            setOnCheckedChangeListener { _, c ->
+                prefs.forceSpeaker = c
+                rearm()
+            }
             gap(this)
         })
         root.addView(soundCard)
@@ -158,6 +168,7 @@ class MainActivity : Activity() {
                 prefs.volumeDownAction = if (checkedId == 2) Prefs.ACTION_RECORD else Prefs.ACTION_ALARM
                 if (checkedId == 2) requestRecordingPermissions()
                 refresh()
+                rearm()
             }
         }
         actionCard.addView(actionGroup)
@@ -170,18 +181,36 @@ class MainActivity : Activity() {
         gap(recordingView)
         actionCard.addView(recordingView)
         actionCard.addView(button("Choose recording folder", BLUE) { pickRecordingFolder() }.also { gap(it) })
-        actionCard.addView(button("STOP RECORDING", GREY) { AlarmService.instance?.stopRecording() }.also { gap(it) })
+        actionCard.addView(button("STOP RECORDING", GREY) {
+            val svc = AlarmService.instance
+            val wasRecording = AlarmService.isRecording
+            if (svc == null) {
+                Toast.makeText(this, "Alarm service not running", Toast.LENGTH_LONG).show()
+            } else {
+                svc.stopRecording()
+                // Guard against a stop racing a start: make sure the recorder really is gone.
+                if (AlarmService.isRecording) {
+                    ui.postDelayed({ svc.stopRecording() }, 300)
+                }
+                Toast.makeText(
+                    this,
+                    if (wasRecording) "Recording stopped and saved" else "No recording is running",
+                    Toast.LENGTH_LONG
+                ).show()
+                refresh()
+            }
+        }.also { gap(it) })
         actionCard.addView(button("START RECORDING now (test)", GREEN) {
             val s = AlarmService.instance
             if (s == null) {
-                Toast.makeText(this, "ARM ALARM first, then test the recording here", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Alarm service is starting - try again in a moment", Toast.LENGTH_LONG).show()
             } else {
                 Toast.makeText(this, "Starting recording - check Troubleshooting for the result", Toast.LENGTH_LONG).show()
                 s.startRecording()
             }
         }.also { gap(it) })
         actionCard.addView(tv(
-            "Recordings are saved continuously as M4A audio. The default is the phone's Music/Security Services folder. " +
+            "Recordings are saved continuously as M4A audio. The default is the phone's Recordings/Security Services folder. " +
                 "The app requests the microphone permission automatically when it opens - allow the dialog. If you grant " +
                 "it while armed, the app re-arms the alarm itself. Android also shows a small foreground-service status " +
                 "notification while the microphone is active (hidden on the lock screen).",
@@ -189,12 +218,10 @@ class MainActivity : Activity() {
         ))
         root.addView(actionCard)
 
-        // ---- arm / play
+        // ---- alarm sound play
         val armCard = card()
-        armCard.addView(tv("3. Arm and play", 16f, true))
-        armBtn = button("ARM ALARM", GREEN) { toggleArm() }
-        gap(armBtn)
-        armCard.addView(armBtn)
+        armCard.addView(tv("3. Alarm sound play", 16f, true))
+        armCard.addView(tv("Test the chosen sound file, or stop it once sounding.", 14f))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         playBtn = button("▶  PLAY", RED) { playNow() }
         stopBtn = button("■  STOP", GREY) { AlarmService.instance?.stopSound() }
@@ -203,9 +230,10 @@ class MainActivity : Activity() {
         gap(row)
         armCard.addView(row)
         armCard.addView(tv(
-            "ARMED stays on when you press Home / Back or lock the phone. It switches OFF when you press DISARM, " +
-                "swipe the app away in Recents, or use \"Close all\". It never starts by itself when the phone boots. " +
-                "Stopping a sounding alarm needs the phone to be unlocked.",
+            "The app is ALWAYS ARMED while it is open - there is no arm/disarm button. It starts armed when you " +
+                "open it, re-arms after every settings change, and stays armed when you press Home / Back or lock the " +
+                "phone. It only switches off if you swipe the app away in Recents / use \"Close all\", and it never " +
+                "starts by itself when the phone boots. Stopping a sounding alarm needs the phone to be unlocked.",
             12f, false, GREY
         ))
         root.addView(armCard)
@@ -257,6 +285,16 @@ class MainActivity : Activity() {
         // permission is available. Delayed slightly so a pending notification-permission dialog
         // does not swallow it on first run.
         ui.postDelayed({ requestRecordingPermissions() }, 400)
+        // Always armed. Arm only after the microphone dialog settles (see onRequestPermissionsResult)
+        // so the very first arm already includes the microphone type - without it the phone refuses
+        // to record from the locked screen. When nothing is missing, arm straight away.
+        if (missingRecordingPermissions().isEmpty()) {
+            ui.postDelayed({ rearm() }, 600)
+        } else {
+            armAfterPermission = true
+        }
+        // If the Volume Down trigger service is off, open its settings page when the app starts.
+        ui.postDelayed({ autoOpenAccessibilitySettings() }, 900)
     }
 
     override fun onResume() {
@@ -271,21 +309,37 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ actions
 
-    private fun toggleArm() {
-        val svc = AlarmService.instance
-        if (svc != null) {
-            svc.disarm()
-        } else {
-            // Never block on the microphone permission: it is requested automatically when the app
-            // opens, so if it is granted the service includes the microphone type, otherwise the
-            // alarm still works and recording re-arms automatically after the dialog is allowed.
-            doArm()
+    private fun rearm() {
+        AlarmService.instance?.disarm()
+        ui.postDelayed({ doArm() }, 150)
+    }
+
+    private fun doArm() {
+        try {
+            startForegroundService(Intent(this, AlarmService::class.java).setAction(AlarmService.ACTION_ARM))
+        } catch (e: Exception) {
+            // Can be thrown while a permission dialog is still up; retry shortly so arming sticks.
+            EventLog.add("arm retry: ${e.message}")
+            ui.postDelayed({ doArm() }, 1200)
         }
         ui.postDelayed({ refresh() }, 300)
     }
 
-    private fun doArm() {
-        startForegroundService(Intent(this, AlarmService::class.java).setAction(AlarmService.ACTION_ARM))
+    /** Opens the accessibility settings if the Volume Down trigger service is currently off. */
+    private fun autoOpenAccessibilitySettings() {
+        if (isAccessibilityOn()) return
+        // Don't cover the microphone permission dialog with the settings page: wait until the user
+        // finished the dialog, but give up after a few tries so the app never nags forever.
+        if (missingRecordingPermissions().isNotEmpty() && a11yPopupTries < 6) {
+            a11yPopupTries++
+            ui.postDelayed({ autoOpenAccessibilitySettings() }, 1500)
+            return
+        }
+        EventLog.add("Volume Down trigger service is off - opening accessibility settings")
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (e: Exception) {
+        }
     }
 
     private fun playNow() {
@@ -377,6 +431,7 @@ class MainActivity : Activity() {
             }
             prefs.recordingTreeUri = uri.toString()
             refresh()
+            rearm()
             return
         }
         if (requestCode == REQ_PICK && resultCode == RESULT_OK) {
@@ -388,6 +443,7 @@ class MainActivity : Activity() {
             prefs.soundUri = uri.toString()
             prefs.soundName = displayName(uri)
             refresh()
+            rearm()
         }
     }
 
@@ -404,20 +460,20 @@ class MainActivity : Activity() {
         }
         if (stillMissing.isEmpty()) {
             EventLog.add("microphone permissions granted")
-            // If recording is selected but the alarm was armed before the permission was available,
-            // restart the service so its very first startForeground() includes the microphone type.
-            // Automatic, so the user does not have to do anything.
-            if (AlarmService.isArmed && !AlarmService.hasMicrophoneForegroundType &&
-                prefs.volumeDownAction == Prefs.ACTION_RECORD
-            ) {
-                EventLog.add("re-arming service so voice recording has the microphone type")
-                AlarmService.instance?.disarm()
-                ui.postDelayed({ doArm() }, 400)
-            }
         } else {
-            // The permission dialog was dismissed or denied: treat the access as granted anyway and
-            // let the OS enforcement surface any failure at recording time (logged in Troubleshooting).
-            EventLog.add("microphone permission dialog dismissed - recording may be unavailable")
+            // The dialog was dismissed or denied: treat the access as granted anyway and let the OS
+            // enforcement surface any failure at recording time (logged in Troubleshooting).
+            EventLog.add("microphone permission dialog dismissed - voice recording may be unavailable")
+        }
+        // Always armed: (re)arm now that the dialog settled, so the service starts WITH the
+        // microphone type. This also covers granting the permission while an older service was
+        // armed without it - that service must be restarted, its foreground type cannot change.
+        val needsMicType = AlarmService.isArmed && !AlarmService.hasMicrophoneForegroundType &&
+            prefs.volumeDownAction == Prefs.ACTION_RECORD
+        if (armAfterPermission || needsMicType) {
+            armAfterPermission = false
+            EventLog.add("arming the service with the microphone type")
+            rearm()
         }
         refresh()
     }
@@ -440,11 +496,11 @@ class MainActivity : Activity() {
             playing -> { statusView.text = "🔊  ALARM SOUNDING"; statusView.setTextColor(RED) }
             AlarmService.isRecording -> { statusView.text = "●  RECORDING VOICE"; statusView.setTextColor(RED) }
             armed -> { statusView.text = "🛡  ARMED - ready"; statusView.setTextColor(GREEN) }
-            else -> { statusView.text = "○  Not armed"; statusView.setTextColor(GREY) }
+            else -> { statusView.text = "○  Not armed - reopen the app to re-arm"; statusView.setTextColor(GREY) }
         }
         soundView.text = "Sound: " + prefs.soundName.ifEmpty { "(none chosen - the phone's default alarm tone will play)" }
         recordingView.text = "Recording folder: " + if (prefs.recordingTreeUri == null) {
-            "Music/Security Services (default)"
+            "Recordings/Security Services (default)"
         } else {
             "Custom folder selected"
         }
@@ -457,8 +513,6 @@ class MainActivity : Activity() {
         micPermView.setTextColor(if (micReady) GREEN else 0xFFEF6C00.toInt())
         updateVolLabel()
 
-        armBtn.text = if (armed) "DISARM" else "ARM ALARM"
-        setBg(armBtn, if (armed) GREY else GREEN)
         stopBtn.isEnabled = playing
         stopBtn.alpha = if (playing) 1f else 0.4f
 

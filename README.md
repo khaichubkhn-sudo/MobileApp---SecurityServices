@@ -37,8 +37,10 @@ recording, according to the selected action (locked, unlocked, or with the scree
 2. Tap **Choose sound file...** and pick your audio file. (If you choose none, the phone's default alarm tone is used.)
 3. Set **Alarm volume** (100% = maximum). Leave "Force phone speaker" on for a loud, headphone-independent alarm.
 4. Tap **Play** once to test - then **Stop**.
-5. **Volume Down trigger (recommended):** tap **Open Accessibility settings** > find **Security Services Volume Down trigger**
-   (under Installed apps / Downloaded apps) > turn it **On** > confirm.
+5. **Volume Down trigger (recommended):** the app opens **Accessibility settings** by itself the first time it
+   starts while the trigger is off. Find **Security Services Volume Down trigger**
+   (under Installed apps / Downloaded apps) > turn it **On** > confirm. (You can also tap
+   **Open Accessibility settings** in the app at any time.)
    * If the switch is greyed out or says "Restricted setting" (Android 13+): Settings > Apps > Security Services >
      top-right **&#8942;** menu > **Allow restricted settings**, then try again.
    * The accessibility service gives the most precise Volume Down detection. This app also has a back-up
@@ -51,26 +53,32 @@ recording, according to the selected action (locked, unlocked, or with the scree
 
 8. To use voice recording, select **Start microphone voice recording** in the Volume Down action section.
    The app requests the microphone permission itself every time it opens - just allow the dialog when it
-   appears (the status line shows "granted ✓" once done; there is no permission button any more). Granting
-   while armed re-arms the alarm automatically (the background service must start *with* the microphone type,
-   it cannot be added later). **START RECORDING now (test)** lets you verify the mic pipeline from the app
-   while armed. Choose a folder if needed; otherwise files are saved under **Music/Security Services** (with a
-   fallback folder if the phone refuses that location). Tap **STOP RECORDING** in the app to finish the current
-   M4A file. Recording also stops when the file reaches 300 MB or the app is closed.
+   appears (the status line shows "granted ✓" once done; there is no permission button any more). The app then
+   arms itself **after** the dialog, so the armed service already runs with the microphone type (without it the
+   phone refuses to record while the screen is locked; granting the permission while armed re-arms the service
+   automatically). **START RECORDING now (test)** lets you verify the mic pipeline from the app.
+   Choose a folder if needed; otherwise files are saved under **Recordings/Security Services** (with a fallback
+   folder if the phone refuses that location). Once armed, **hold Volume Down for 2 seconds** to start recording,
+   and tap **STOP RECORDING** in the app to finish the current M4A file (the notification shows "RECORDING VOICE"
+   while it runs). Recording also stops when the file reaches 300 MB or the app is closed.
 
 ## Part C - Daily use
-* **ARM ALARM** when you want protection. A quiet "Security Services ARMED" notification appears (hidden on the lock screen).
+* **The app is always armed while it is open** - there is no arm/disarm button. A quiet "Security Services ARMED"
+  notification appears (hidden on the lock screen). It arms itself when you open it and **re-arms after every
+  settings change**, so every setting applies to a fresh service.
 * Press Home/Back or lock the phone - it stays armed.
-* **Disarm** = DISARM button, swipe the app away in Recents, or "Close all". It never arms itself after a reboot.
-* **Volumes**: as soon as you ARM, the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
+* It switches off only if you swipe the app away in Recents / use "Close all" (reopen the app to re-arm).
+  It never arms itself after a reboot.
+* **Volumes**: while armed the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
   (even before the alarm plays) and keeps the media / ringer volumes above zero, so your Volume Down trigger always has
-  room to be detected. When the app closes (disarm / swipe away), the original volumes are restored.
+  room to be detected. When the app closes (swipe away), the original volumes are restored.
 * **Sound or record**: the selected Volume Down action starts after a 2-second hold (works locked, unlocked, or
-   with the screen off; Volume Up is ignored). Android requires a foreground-service notification while recording.
-* **Stop it**: open the app, tap **STOP**.
+   with the screen off; Volume Up is ignored). With recording selected, the hold starts a voice recording and the
+   ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.
+* **Stop it**: tap **STOP RECORDING** to finish and save the voice file, or **STOP** to silence a sounding alarm.
 
 ## Part D - Test the Volume Down trigger
-1. ARM the alarm. 2. Press and hold **Volume Down** for 2 seconds (no need to lock the phone first -
+1. Open the app (it arms itself), then press and hold **Volume Down** for 2 seconds (no need to lock the phone first -
    it works whether the phone is locked, unlocked, or the screen is off).
 3. The alarm should sound within a second. If not, look at **Troubleshooting** at the bottom of the app:
    it lists what the app noticed, including the volume-press detection and the trigger result.

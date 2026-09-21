@@ -295,17 +295,28 @@ class AlarmService : Service() {
             EventLog.add("microphone permission not granted yet - the app requests it automatically when it opens")
         }
         if (Build.VERSION.SDK_INT >= 29 && !recordingForeground) {
-            EventLog.add(
-                "the background service is not running with the microphone type (it re-arms automatically " +
-                    "once the permission dialog is allowed in the app) - recording may be denied"
-            )
+            // The phone only lets a foreground service capture the microphone from the locked
+            // screen while the service runs with the microphone type. Try to add that type to the
+            // already-running service (allowed from Android 11 on, once the runtime permission is
+            // granted); if the phone refuses, recording still works while the app is in the
+            // foreground and the app re-arms automatically the next time the permission is allowed.
+            try {
+                startForeground(
+                    NOTIF_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+                recordingForeground = true
+                EventLog.add("microphone type added to the running service")
+            } catch (e: Exception) {
+                EventLog.add("could not add the microphone type: ${e.message ?: e.javaClass.simpleName}")
+            }
         }
         var activeRecorder: MediaRecorder? = null
         try {
-            // NOTE: no startForeground()/goForeground() here. The service already runs in the
-            // foreground with the microphone type (granted once in onStartCommand) and that call
-            // cannot be safely re-issued to change the type while the phone is locked. The
-            // notification is refreshed at the end instead.
+            // The service already runs in the foreground; only the notification is refreshed at the
+            // end (see the microphone-type handling above for the one deliberate exception).
             val output = createRecordingOutput()
             activeRecorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
             activeRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -345,8 +356,10 @@ class AlarmService : Service() {
         }
     }
 
+    /** Stops and finalises the current recording. Safe to call when nothing is recording. */
     fun stopRecording(updateNotification: Boolean = true) {
         handler.removeCallbacks(recordingSizeCheck)
+        val wasRecording = recorder != null
         recorder?.let {
             try {
                 it.stop()
@@ -369,8 +382,8 @@ class AlarmService : Service() {
         recordingFd = null
         recordingFile = null
         recordingUri = null
+        if (wasRecording) EventLog.add("VOICE RECORDING STOPPED")
         if (updateNotification && instance != null) {
-            EventLog.add("VOICE RECORDING STOPPED")
             refreshNotification()
         }
     }
@@ -402,7 +415,7 @@ class AlarmService : Service() {
                 val values = android.content.ContentValues().apply {
                     put(MediaStore.Audio.Media.DISPLAY_NAME, name)
                     put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
-                    put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Security Services")
+                    put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_RECORDINGS + "/Security Services")
                     put(MediaStore.Audio.Media.IS_PENDING, 0)
                 }
                 val uri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
@@ -418,10 +431,13 @@ class AlarmService : Service() {
                 recordingFd = null
             }
         }
-        // 3) Public Music storage as a plain folder: WRITE_EXTERNAL_STORAGE is auto-granted to this
+        // 3) Public Recordings storage as a plain folder: WRITE_EXTERNAL_STORAGE is auto-granted to this
         //    targetSdk-34 build (and was requested up front on older API levels), so recording
         //    still works even if the MediaStore collection itself rejected the insert.
-        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Security Services")
+        val directory = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RECORDINGS),
+            "Security Services"
+        )
         if (!directory.exists() && !directory.mkdirs()) {
             throw IllegalStateException("Could not create ${directory.absolutePath}")
         }
@@ -577,8 +593,9 @@ class AlarmService : Service() {
         }
         lastVolumes = current
 
-        // Volume Up cancels a pending hold.
-        if (up) {
+        // Volume Up cancels a pending hold - but only when it is not accompanied by a decrease in the
+        // same callback, because the app's own volume pinning can raise a stream at the same time.
+        if (up && !down) {
             resetVolumeHold()
             return
         }
@@ -665,6 +682,7 @@ class AlarmService : Service() {
      */
     private fun pinVolumes() {
         saveOriginalsIfNeeded()
+        val before = snapshotVolumes()
         try {
             // Skipped entirely while a Volume Down hold is in progress: the hold's own volume
             // decrease must not be undone, otherwise the 2-second hold would never be detected.
@@ -679,6 +697,11 @@ class AlarmService : Service() {
         } catch (e: SecurityException) {
             // Some phones refuse volume changes while Do Not Disturb is active and no DND access was granted.
         }
+        // The app's own volume writes also fire the content observer. When (and only when) a write
+        // actually changed a volume, re-baseline the snapshot so the fallback Volume Down detector
+        // cannot mistake the app's own pinning for a Volume Up press and cancel an in-progress hold.
+        val after = snapshotVolumes()
+        if (!after.contentEquals(before)) lastVolumes = after
     }
 
     /** Raises a stream to at least the preset volume percentage (never below its current level). */
@@ -789,12 +812,22 @@ class AlarmService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val playing = player != null
+        val recording = recorder != null
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (playing) "ALARM SOUNDING" else "Security Services ARMED")
+            .setContentTitle(
+                when {
+                    playing -> "ALARM SOUNDING"
+                    recording -> "RECORDING VOICE"
+                    else -> "Security Services ARMED"
+                }
+            )
             .setContentText(
-                if (playing) "Unlock the phone and open the app to stop it"
-                else "Swipe the app away in Recents to disarm"
+                when {
+                    playing -> "Unlock the phone and open the app to stop it"
+                    recording -> "Open the app and tap STOP RECORDING to finish the file"
+                    else -> "Swipe the app away in Recents to disarm"
+                }
             )
             .setOngoing(true)
             .setVisibility(Notification.VISIBILITY_SECRET) // hidden on the lock screen

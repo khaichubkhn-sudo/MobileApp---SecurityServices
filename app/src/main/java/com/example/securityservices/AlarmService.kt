@@ -202,13 +202,10 @@ class AlarmService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            // Android only lets a foreground service use the microphone when the microphone type is
-            // part of the VERY FIRST startForeground() call; it cannot be added later by recalling
-            // startForeground() from the background / lock screen (the phone is already locked when
-            // the volume-down trigger fires). So include it here, whenever the runtime permission
-            // is available. The manifest declares both types via android:foregroundServiceType.
-            recordingForeground = checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED
+            // goForeground() decides whether the phone lets us run with the microphone type: it
+            // always asks for it optimistically and falls back to media playback only if the runtime
+            // permission is not granted yet (the type can never be added later). The app re-requests
+            // the permission and re-arms automatically once the user allows the dialog in the GUI.
             goForeground()
         } catch (e: Exception) {
             stopSelf()
@@ -291,26 +288,17 @@ class AlarmService : Service() {
     /** Starts microphone capture directly to a file; MediaRecorder performs the streaming writes. */
     fun startRecording() {
         if (recorder != null) return
-        // Only the app's Activity can raise the permission dialog (not a foreground service), so a
-        // failure here points the user to the GUI, which has a one-tap "Grant microphone permissions"
-        // button. Without the runtime permission the service could not be started with the
-        // microphone type and MediaRecorder cannot capture.
+        // The app treats the microphone access as granted: the permission is requested automatically
+        // each time the app opens, so these are informational only and never block recording. Any
+        // real denial surfaces below as a precise MediaRecorder error in Troubleshooting.
         if (!recordingPermissionsReady()) {
-            EventLog.add(
-                "recording failed: microphone permissions missing - open Security Services in the app " +
-                    "and tap 'Grant microphone permissions', then allow the dialog"
-            )
-            return
+            EventLog.add("microphone permission not granted yet - the app requests it automatically when it opens")
         }
-        // Android 11+ also needs the microphone type in the foreground service. It is only included
-        // when the permission is granted at startForeground() time, so granting while armed is not
-        // enough: the service must be restarted (disarm + ARM ALARM) afterwards.
         if (Build.VERSION.SDK_INT >= 29 && !recordingForeground) {
             EventLog.add(
-                "recording failed: microphone foreground service not active - disarm, then ARM ALARM " +
-                    "again now that the permission is granted (the service restarts with the microphone type)"
+                "the background service is not running with the microphone type (it re-arms automatically " +
+                    "once the permission dialog is allowed in the app) - recording may be denied"
             )
-            return
         }
         var activeRecorder: MediaRecorder? = null
         try {
@@ -817,9 +805,24 @@ class AlarmService : Service() {
     private fun goForeground() {
         val n = buildNotification()
         if (Build.VERSION.SDK_INT >= 29) {
-            val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
-                if (recordingForeground) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
-            startForeground(NOTIF_ID, n, type)
+            // Treat the microphone access as granted: optimistically include the microphone type
+            // (needed for voice recording while the screen is locked). If the phone refuses it
+            // because the runtime permission is not granted yet, fall back to media playback only -
+            // the alarm still works, and the app re-arms automatically once the dialog is allowed.
+            recordingForeground = try {
+                startForeground(
+                    NOTIF_ID,
+                    n,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+                true
+            } catch (e: Exception) {
+                false
+            }
+            if (!recordingForeground) {
+                startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            }
         } else {
             startForeground(NOTIF_ID, n)
         }

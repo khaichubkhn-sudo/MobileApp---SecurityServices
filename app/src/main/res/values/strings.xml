@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Security Services - KC</string>
-    <string name="a11y_label">Security Services - KC Volume Down trigger</string>
-    <string name="a11y_description">Lets Security Services - KC notice when the Volume Down button is held down for 2 seconds while armed.</string>
+    <string name="app_name">Security Services</string>
+    <string name="a11y_label">Security Services Volume Down trigger</string>
+    <string name="a11y_description">Lets Security Services notice when the Volume Down button is held down for 2 seconds while armed.</string>
 </resources>

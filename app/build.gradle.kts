@@ -33,6 +33,17 @@ android {
     }
 }
 
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    doLast {
+        val defaultApk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+        val namedApk = layout.buildDirectory.file("outputs/apk/debug/SecurityServices.apk").get().asFile
+        if (defaultApk.exists()) {
+            defaultApk.copyTo(namedApk, overwrite = true)
+            defaultApk.delete()
+        }
+    }
+}
+
 // No third-party libraries on purpose: the app only uses the Android framework.
 dependencies {
 }

@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "SecurityAlarm"
+rootProject.name = "SecurityServices"
 include(":app")

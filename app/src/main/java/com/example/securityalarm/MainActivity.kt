@@ -83,7 +83,7 @@ class MainActivity : Activity() {
         }
         setContentView(scroll)
 
-        root.addView(tv("Security Services - KC", 26f, true))
+        root.addView(tv("Security Services", 26f, true))
 
         // ---- status
         val statusCard = card()
@@ -202,7 +202,7 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }.also { gap(it) })
         lockCard.addView(tv(
-            "Turn on \"Security Services - KC Volume Down trigger\" there (Installed / Downloaded apps).",
+            "Turn on \"Security Services Volume Down trigger\" there (Installed / Downloaded apps).",
             12f, false, GREY
         ))
         root.addView(lockCard)

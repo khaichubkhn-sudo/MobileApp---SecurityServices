@@ -718,7 +718,7 @@ class AlarmService : Service() {
         val playing = player != null
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (playing) "ALARM SOUNDING" else "Security Services - KC ARMED")
+            .setContentTitle(if (playing) "ALARM SOUNDING" else "Security Services ARMED")
             .setContentText(
                 if (playing) "Unlock the phone and open the app to stop it"
                 else "Swipe the app away in Recents to disarm"

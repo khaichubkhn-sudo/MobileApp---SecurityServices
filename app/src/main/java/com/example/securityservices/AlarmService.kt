@@ -657,11 +657,10 @@ class AlarmService : Service() {
 
     /** Applies the user's selected action for a completed Volume Down hold. */
     fun triggerVolumeAction() {
-        sendLocationIfConfigured()
-        if (prefs.volumeDownAction == Prefs.ACTION_RECORD) {
-            startRecording()
-        } else if (!isPlaying) {
-            startAlarm()
+        when (prefs.volumeDownAction) {
+            Prefs.ACTION_LOCATION -> sendLocationIfConfigured()
+            Prefs.ACTION_RECORD -> startRecording()
+            else -> if (!isPlaying) startAlarm()
         }
     }
 

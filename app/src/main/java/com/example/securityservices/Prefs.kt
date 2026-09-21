@@ -38,7 +38,7 @@ class Prefs(context: Context) {
 
     var locationPhoneNumbers: String
         get() = sp.getString("location_phone_numbers", "") ?: ""
-        set(v) { sp.edit().putString("location_phone_numbers", v).apply() }
+        set(v) { sp.edit().putString("location_phone_numbers", v.take(50)).apply() }
 
     var lastLocationMessage: String
         get() = sp.getString("last_location_message", "") ?: ""
@@ -62,6 +62,7 @@ class Prefs(context: Context) {
     companion object {
         const val ACTION_ALARM = "alarm"
         const val ACTION_RECORD = "record"
+        const val ACTION_LOCATION = "location"
     }
 
 }

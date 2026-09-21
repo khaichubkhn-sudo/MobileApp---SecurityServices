@@ -20,7 +20,6 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -91,6 +90,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        if (prefs.sendLocationOnVolumeDown && prefs.volumeDownAction != Prefs.ACTION_LOCATION) {
+            prefs.volumeDownAction = Prefs.ACTION_LOCATION
+        }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -169,30 +171,37 @@ class MainActivity : Activity() {
                 text = "Start microphone voice recording"
                 id = 2
             }
+            val locationOption = RadioButton(this@MainActivity).apply {
+                text = "Send current GPS location by SMS"
+                id = 3
+            }
             addView(alarmOption)
             addView(recordOption)
-            check(if (prefs.volumeDownAction == Prefs.ACTION_RECORD) 2 else 1)
+            addView(locationOption)
+            check(
+                when (prefs.volumeDownAction) {
+                    Prefs.ACTION_RECORD -> 2
+                    Prefs.ACTION_LOCATION -> 3
+                    else -> 1
+                }
+            )
             setOnCheckedChangeListener { _, checkedId ->
-                prefs.volumeDownAction = if (checkedId == 2) Prefs.ACTION_RECORD else Prefs.ACTION_ALARM
+                prefs.volumeDownAction = when (checkedId) {
+                    2 -> Prefs.ACTION_RECORD
+                    3 -> Prefs.ACTION_LOCATION
+                    else -> Prefs.ACTION_ALARM
+                }
+                prefs.sendLocationOnVolumeDown = checkedId == 3
                 if (checkedId == 2) requestRecordingPermissions()
+                if (checkedId == 3) requestLocationSmsPermissions()
                 refresh()
                 rearm()
             }
         }
         actionCard.addView(actionGroup)
-        val locationCheck = CheckBox(this).apply {
-            text = "Send current GPS location by SMS after the trigger"
-            isChecked = prefs.sendLocationOnVolumeDown
-            setOnCheckedChangeListener { _, checked ->
-                prefs.sendLocationOnVolumeDown = checked
-                if (checked) requestLocationSmsPermissions()
-                rearm()
-            }
-        }
-        gap(locationCheck)
-        actionCard.addView(locationCheck)
         val locationNumbers = EditText(this).apply {
             hint = "Phone numbers (comma or newline separated)"
+            filters = arrayOf(android.text.InputFilter.LengthFilter(50))
             setText(prefs.locationPhoneNumbers)
             inputType = android.text.InputType.TYPE_CLASS_PHONE or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE

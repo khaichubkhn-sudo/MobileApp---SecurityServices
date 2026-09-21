@@ -61,6 +61,9 @@ class MainActivity : Activity() {
     /** True while the app waits for the microphone dialog before its first (re-)arm. */
     private var armAfterPermission = false
 
+    /** Last recording state applied to the recording buttons (avoids re-styling on every tick). */
+    private var recordingUiState: Boolean? = null
+
     private lateinit var statusView: TextView
     private lateinit var soundView: TextView
     private lateinit var recordingView: TextView
@@ -68,6 +71,8 @@ class MainActivity : Activity() {
     private lateinit var volLabel: TextView
     private lateinit var playBtn: Button
     private lateinit var stopBtn: Button
+    private lateinit var startRecBtn: Button
+    private lateinit var stopRecBtn: Button
     private lateinit var a11yView: TextView
     private lateinit var dndView: TextView
     private lateinit var logView: TextView
@@ -180,8 +185,8 @@ class MainActivity : Activity() {
         recordingView = tv("", 14f)
         gap(recordingView)
         actionCard.addView(recordingView)
-        actionCard.addView(button("Choose recording folder", BLUE) { pickRecordingFolder() }.also { gap(it) })
-        actionCard.addView(button("STOP RECORDING", GREY) {
+        actionCard.addView(recordButton("Choose recording folder", BLUE) { pickRecordingFolder() }.also { gap(it) })
+        stopRecBtn = recordButton("STOP RECORDING", GREY) {
             val svc = AlarmService.instance
             val wasRecording = AlarmService.isRecording
             if (svc == null) {
@@ -199,8 +204,9 @@ class MainActivity : Activity() {
                 ).show()
                 refresh()
             }
-        }.also { gap(it) })
-        actionCard.addView(button("START RECORDING now (test)", GREEN) {
+        }
+        actionCard.addView(stopRecBtn.also { gap(it) })
+        startRecBtn = recordButton("START RECORDING now (test)", GREEN) {
             val s = AlarmService.instance
             if (s == null) {
                 Toast.makeText(this, "Alarm service is starting - try again in a moment", Toast.LENGTH_LONG).show()
@@ -208,7 +214,8 @@ class MainActivity : Activity() {
                 Toast.makeText(this, "Starting recording - check Troubleshooting for the result", Toast.LENGTH_LONG).show()
                 s.startRecording()
             }
-        }.also { gap(it) })
+        }
+        actionCard.addView(startRecBtn.also { gap(it) })
         actionCard.addView(tv(
             "Recordings are saved continuously as M4A audio. The default is the phone's Recordings/Security Services folder. " +
                 "The app requests the microphone permission automatically when it opens - allow the dialog. If you grant " +
@@ -504,17 +511,24 @@ class MainActivity : Activity() {
         } else {
             "Custom folder selected"
         }
+        // No permission nagging here: the app asks for the microphone by itself, so only confirm it
+        // once the permission is actually granted.
         val micReady = microphonePermissionsReady()
-        micPermView.text =
-            if (micReady)
-                "Microphone permission: granted ✓"
-            else
-                "Microphone permission: not granted yet - the app requests it automatically when it opens"
-        micPermView.setTextColor(if (micReady) GREEN else 0xFFEF6C00.toInt())
+        micPermView.text = if (micReady) "Microphone permission: granted ✓" else ""
+        micPermView.setTextColor(GREEN)
+        micPermView.visibility = if (micReady) android.view.View.VISIBLE else android.view.View.GONE
         updateVolLabel()
 
         stopBtn.isEnabled = playing
         stopBtn.alpha = if (playing) 1f else 0.4f
+
+        // Recording controls: highlight the action that applies right now and dim the opposite one.
+        val recording = AlarmService.isRecording
+        if (recordingUiState != recording) {
+            recordingUiState = recording
+            styleRecordButton(startRecBtn, active = !recording, color = GREEN)
+            styleRecordButton(stopRecBtn, active = recording, color = RED)
+        }
 
         a11yView.text = if (isAccessibilityOn()) "Trigger service: ON ✓" else "Trigger service: OFF - enable it below"
         a11yView.setTextColor(if (isAccessibilityOn()) GREEN else RED)
@@ -590,5 +604,25 @@ class MainActivity : Activity() {
         minHeight = dp(52)
         setBg(this, color)
         setOnClickListener { onClick() }
+    }
+
+    /**
+     * The three voice-recording controls share one identical look - same font, same size and a
+     * single-line height - so the recording section reads as one coherent group.
+     */
+    private fun recordButton(label: String, color: Int, onClick: () -> Unit) =
+        button(label, color, onClick).apply {
+            textSize = 14f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+
+    /** Highlights a recording button while its action applies, and dims the opposite one. */
+    private fun styleRecordButton(b: Button, active: Boolean, color: Int) {
+        b.isEnabled = active
+        b.alpha = if (active) 1f else 0.35f
+        b.setTypeface(Typeface.DEFAULT, if (active) Typeface.BOLD else Typeface.NORMAL)
+        setBg(b, if (active) color else GREY)
     }
 }

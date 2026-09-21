@@ -55,6 +55,7 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private lateinit var soundView: TextView
     private lateinit var recordingView: TextView
+    private lateinit var micPermView: TextView
     private lateinit var volLabel: TextView
     private lateinit var armBtn: Button
     private lateinit var playBtn: Button
@@ -157,6 +158,14 @@ class MainActivity : Activity() {
             }
         }
         actionCard.addView(actionGroup)
+        // The Wear OS permission dialog can only be raised by the Activity, so show the current
+        // microphone permission state here and offer an explicit one-tap way to open the dialog.
+        micPermView = tv("", 14f, true)
+        gap(micPermView)
+        actionCard.addView(micPermView)
+        actionCard.addView(button("Grant microphone permissions…", BLUE) {
+            requestRecordingPermissions(true)
+        }.also { gap(it) })
         recordingView = tv("", 14f)
         gap(recordingView)
         actionCard.addView(recordingView)
@@ -164,7 +173,9 @@ class MainActivity : Activity() {
         actionCard.addView(button("STOP RECORDING", GREY) { AlarmService.instance?.stopRecording() }.also { gap(it) })
         actionCard.addView(tv(
             "Recordings are saved continuously as M4A audio. The default is the phone's Music/Security Services folder. " +
-                "Android requires a small foreground-service status notification while the microphone is active; it is hidden on the lock screen.",
+                "Android asks once for the microphone permission - allow the dialog. It must be granted before arming; " +
+                "if you granted it while armed, press DISARM and ARM again. Android also shows a small foreground-service " +
+                "status notification while the microphone is active (hidden on the lock screen).",
             12f, false, GREY
         ))
         root.addView(actionCard)
@@ -232,7 +243,11 @@ class MainActivity : Activity() {
         root.addView(logCard)
 
         requestNotificationPermission()
-        if (prefs.volumeDownAction == Prefs.ACTION_RECORD) requestRecordingPermissions()
+        if (prefs.volumeDownAction == Prefs.ACTION_RECORD) {
+            // Delay slightly so a pending notification-permission dialog (requested just above) does
+            // not swallow the microphone dialog on first run.
+            ui.postDelayed({ requestRecordingPermissions() }, 500)
+        }
     }
 
     override fun onResume() {
@@ -252,6 +267,15 @@ class MainActivity : Activity() {
         if (svc != null) {
             svc.disarm()
         } else {
+            // Warn up front: the foreground service can only include the microphone type if the
+            // runtime permission is granted BEFORE it starts, so tell the user to fix it first.
+            if (prefs.volumeDownAction == Prefs.ACTION_RECORD && !microphonePermissionsReady()) {
+                Toast.makeText(
+                    this,
+                    "Microphone permissions missing - tap 'Grant microphone permissions' and allow the dialog so voice recording can start",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             startForegroundService(Intent(this, AlarmService::class.java).setAction(AlarmService.ACTION_ARM))
         }
         ui.postDelayed({ refresh() }, 300)
@@ -270,7 +294,20 @@ class MainActivity : Activity() {
         startActivityForResult(i, REQ_RECORDING_FOLDER)
     }
 
-    private fun requestRecordingPermissions() {
+    /** True when the runtime microphone permissions needed for voice recording are granted. */
+    private fun microphonePermissionsReady(): Boolean {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
+        if (Build.VERSION.SDK_INT >= 29 &&
+            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != PackageManager.PERMISSION_GRANTED
+        ) return false
+        return true
+    }
+
+    /**
+     * Requests the runtime microphone permissions, showing the Wear OS permission dialog whenever a
+     * permission is missing. When [explain] is true a Toast first tells the user what to expect.
+     */
+    private fun requestRecordingPermissions(explain: Boolean = false) {
         val missing = mutableListOf<String>()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             missing.add(Manifest.permission.RECORD_AUDIO)
@@ -279,7 +316,9 @@ class MainActivity : Activity() {
         // Android 11+ (and is mandatory for targetSdk 34): "Starting FGS with type microphone
         // ... requires permissions". Declaring it in the manifest is not enough on modern
         // Android; the user must also grant the permission at runtime.
-        if (checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != PackageManager.PERMISSION_GRANTED) {
+        if (Build.VERSION.SDK_INT >= 29 &&
+            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != PackageManager.PERMISSION_GRANTED
+        ) {
             missing.add(PERMISSION_FOREGROUND_MICROPHONE)
         }
         if (Build.VERSION.SDK_INT <= 28 &&
@@ -287,7 +326,18 @@ class MainActivity : Activity() {
         ) {
             missing.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
-        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_MICROPHONE)
+        if (missing.isEmpty()) {
+            if (explain) {
+                Toast.makeText(this, "Microphone permissions are already granted", Toast.LENGTH_LONG).show()
+            }
+            refresh()
+            return
+        }
+        if (explain) {
+            Toast.makeText(this, "Please allow the microphone permission in the dialog that appears", Toast.LENGTH_LONG).show()
+        }
+        EventLog.add("requesting microphone permissions")
+        requestPermissions(missing.toTypedArray(), REQ_MICROPHONE)
     }
 
     private fun pickSound() {
@@ -330,6 +380,35 @@ class MainActivity : Activity() {
         }
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        if (requestCode != REQ_MICROPHONE) return
+        val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        if (allGranted) {
+            EventLog.add("microphone permissions granted")
+            Toast.makeText(this, "Microphone permissions granted - voice recording is ready", Toast.LENGTH_LONG).show()
+        } else {
+            EventLog.add("microphone permissions NOT granted - voice recording disabled")
+            Toast.makeText(
+                this,
+                "Microphone access was not granted. Tap 'Grant microphone permissions' or allow it in Settings > App permissions to record.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        // The foreground service only gets the microphone type when it is started AFTER the grant.
+        // If the alarm is already armed without it, the user must restart it (disarm + re-arm).
+        if (allGranted && AlarmService.isArmed && !AlarmService.hasMicrophoneForegroundType &&
+            prefs.volumeDownAction == Prefs.ACTION_RECORD
+        ) {
+            Toast.makeText(
+                this,
+                "To record voice now: press DISARM, then ARM ALARM again (the service restarts with the microphone type)",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        refresh()
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -356,6 +435,12 @@ class MainActivity : Activity() {
         } else {
             "Custom folder selected"
         }
+        val micReady = microphonePermissionsReady()
+        micPermView.text = if (micReady)
+            "Microphone permission: granted ✓"
+        else
+            "Microphone permission: needed - tap 'Grant microphone permissions' below"
+        micPermView.setTextColor(if (micReady) GREEN else RED)
         updateVolLabel()
 
         armBtn.text = if (armed) "DISARM" else "ARM ALARM"

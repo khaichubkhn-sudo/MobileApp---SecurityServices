@@ -83,6 +83,10 @@ class AlarmService : Service() {
         val isArmed: Boolean get() = instance != null
         val isPlaying: Boolean get() = instance?.player != null
         val isRecording: Boolean get() = instance?.recorder != null
+
+        /** True when the running foreground service includes the microphone type (only true when the
+         *  runtime permission was granted before the service started). Recording needs this type. */
+        val hasMicrophoneForegroundType: Boolean get() = instance?.recordingForeground ?: false
     }
 
     private var player: MediaPlayer? = null
@@ -272,19 +276,40 @@ class AlarmService : Service() {
         if (updateNotification) refreshNotification()
     }
 
+    /** True when the runtime microphone permissions are granted, so [startRecording] can capture. */
+    fun recordingPermissionsReady(): Boolean {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return false
+        if (Build.VERSION.SDK_INT >= 29 &&
+            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return false
+        return true
+    }
+
     /** Starts microphone capture directly to a file; MediaRecorder performs the streaming writes. */
     fun startRecording() {
         if (recorder != null) return
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            EventLog.add("recording failed: microphone permission missing")
+        // Only the app's Activity can raise the permission dialog (not a foreground service), so a
+        // failure here points the user to the GUI, which has a one-tap "Grant microphone permissions"
+        // button. Without the runtime permission the service could not be started with the
+        // microphone type and MediaRecorder cannot capture.
+        if (!recordingPermissionsReady()) {
+            EventLog.add(
+                "recording failed: microphone permissions missing - open Security Services in the app " +
+                    "and tap 'Grant microphone permissions', then allow the dialog"
+            )
             return
         }
-        // Android 11+ also requires the microphone foreground-service runtime permission; without
-        // it the service was started without the microphone type and MediaRecorder cannot capture.
-        if (Build.VERSION.SDK_INT >= 29 &&
-            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            EventLog.add("recording failed: grant the microphone foreground permission (select the record option, then allow the dialog)")
+        // Android 11+ also needs the microphone type in the foreground service. It is only included
+        // when the permission is granted at startForeground() time, so granting while armed is not
+        // enough: the service must be restarted (disarm + ARM ALARM) afterwards.
+        if (Build.VERSION.SDK_INT >= 29 && !recordingForeground) {
+            EventLog.add(
+                "recording failed: microphone foreground service not active - disarm, then ARM ALARM " +
+                    "again now that the permission is granted (the service restarts with the microphone type)"
+            )
             return
         }
         var activeRecorder: MediaRecorder? = null

@@ -73,9 +73,6 @@ class AlarmService : Service() {
             AudioManager.STREAM_NOTIFICATION
         )
 
-        /** How often the volume pin re-applies the preset / non-zero volumes while armed. */
-        private const val VOLUME_PIN_MS = 500L
-
         @Volatile
         var instance: AlarmService? = null
             private set
@@ -115,8 +112,20 @@ class AlarmService : Service() {
         }
     }
 
-    // ------------------------------------------------- volume pinning (never silent while armed)
-    private var volumesSaved = false
+    // ------------------------------------------- volume control (only while an action is running)
+
+    /**
+     * True while the app is doing something that uses its own volume setting: the alarm is sounding
+     * or a voice recording is running. Only then does the app touch the phone's volumes; otherwise
+     * the volumes are left completely alone so the user can adjust them.
+     */
+    private val actionRunning: Boolean get() = player != null || recorder != null
+
+    /**
+     * True once the phone's volumes have been captured for the running action, so they can be put
+     * back the moment the last action stops.
+     */
+    private var actionVolumesSaved = false
 
     /**
      * Identifies this service instance inside the on-disk volume record. A re-arm can stop this
@@ -131,22 +140,6 @@ class AlarmService : Service() {
     private var origAlarmMuted = false
     private var origMusicMuted = false
     private var origRingMuted = false
-
-    /**
-     * While armed, keeps the preset sound volume applied on the alarm/media streams and makes sure
-     * the streams the volume keys adjust are never zero, so a Volume Down press is always detected.
-     * Unarmed run over by [onDestroy] where the original volumes are restored.
-     */
-    private val volumePin = object : Runnable {
-        override fun run() {
-            // Skip while the alarm is sounding (the volume guard pins the alarm stream instead),
-            // but always re-schedule so pinning resumes once the sound stops.
-            if (player == null) {
-                pinVolumes()
-            }
-            handler.postDelayed(this, VOLUME_PIN_MS)
-        }
-    }
 
     // ------------------------------------------------- volume-down fallback detection
     private var lastVolumes = intArrayOf()
@@ -166,10 +159,10 @@ class AlarmService : Service() {
         }
     }
 
-    /** Re-applies the chosen volume 4x per second while the sound is playing. */
+    /** Re-applies the chosen volume 4x per second while an action is running. */
     private val volumeGuard = object : Runnable {
         override fun run() {
-            if (player != null) {
+            if (actionRunning) {
                 enforceVolume()
                 handler.postDelayed(this, 250)
             }
@@ -179,11 +172,11 @@ class AlarmService : Service() {
     /** Fires immediately when anybody (volume keys, settings, other apps) changes a volume. */
     private val volumeObserver = object : ContentObserver(handler) {
         override fun onChange(selfChange: Boolean) {
-            if (player != null) {
-                // Alarm sounding: keep the chosen volume pinned.
+            if (actionRunning) {
+                // An action is running: keep the app's own volume setting applied.
                 enforceVolume()
             } else {
-                // Armed and silent: Volume Down fallback detection.
+                // Nothing running: the volume belongs to the user, and a Volume Down hold is the trigger.
                 detectVolumeDownHold()
             }
         }
@@ -202,10 +195,10 @@ class AlarmService : Service() {
         createChannel()
         contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver)
 
-        // Apply the preset volume right away (even before any sound plays) and keep it non-zero.
-        saveOriginalsIfNeeded()
-        pinVolumes()
-        handler.post(volumePin)
+        // The app keeps its hands off the phone's volume while no action runs, so nothing is applied
+        // here. If a previous run was killed while an action was still running, put the phone's real
+        // volumes back right away.
+        restoreSavedVolumesFromDisk()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -229,14 +222,11 @@ class AlarmService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Closing the app (swipe away in Recents / "Close all") must put the phone's volumes back to
-        // the levels that were in place before the app started. Do it here as well as in onDestroy(),
-        // because the process can be killed without a clean onDestroy() callback. Both volume loops
-        // stop first, otherwise the guard would re-raise the alarm volume right after the restore.
-        EventLog.add("app closed - putting the original volumes back")
-        handler.removeCallbacks(volumePin)
-        handler.removeCallbacks(volumeGuard)
-        restoreVolumes()
+        // Closing the app (swipe away in Recents / "Close all") stops any running action, and stopping
+        // the last action puts the phone's volumes back to the levels they had before it started (see
+        // endActionVolumes()). Doing it through disarm() also covers vendors that deliver this callback
+        // but not a clean onDestroy().
+        EventLog.add("app closed")
         disarm()
         super.onTaskRemoved(rootIntent)
     }
@@ -245,8 +235,10 @@ class AlarmService : Service() {
         stopSound(updateNotification = false)
         stopRecording(updateNotification = false)
         resetVolumeHold()
-        handler.removeCallbacks(volumePin)
-        restoreVolumes()
+        // stopSound()/stopRecording() above already gave the volumes back if they were the last
+        // action; this is a safety net for an action that ended without either being called.
+        handler.removeCallbacks(volumeGuard)
+        restoreActionVolumes()
         try {
             contentResolver.unregisterContentObserver(volumeObserver)
         } catch (e: Exception) {
@@ -264,11 +256,16 @@ class AlarmService : Service() {
         stopSound(updateNotification = false)
         resetVolumeHold() // no stale hold detection once the alarm is sounding
         overrideDoNotDisturb()
+        beginActionVolumes() // remember the user's levels before the app changes them
         enforceVolume()
         requestFocus()
 
         val ok = playBestAvailable()
-        handler.post(volumeGuard)
+        if (player != null) {
+            handler.post(volumeGuard) // keep the chosen volume applied while it sounds
+        } else {
+            endActionVolumes() // nothing started: leave the phone's volumes exactly as they were
+        }
         refreshNotification()
         EventLog.add(if (ok) "SOUND STARTED" else "SOUND FAILED")
     }
@@ -285,6 +282,8 @@ class AlarmService : Service() {
         player = null
         abandonFocus()
         restoreDoNotDisturb()
+        // The alarm sound is over: give the volumes back to the user (unless a recording still runs).
+        endActionVolumes()
         if (updateNotification) refreshNotification()
     }
 
@@ -343,6 +342,9 @@ class AlarmService : Service() {
             activeRecorder.prepare()
             activeRecorder.start()
             recorder = activeRecorder
+            beginActionVolumes() // remember the user's levels before the app changes them
+            enforceVolume()
+            handler.post(volumeGuard)
             handler.post(recordingSizeCheck)
             EventLog.add("VOICE RECORDING STARTED")
             refreshNotification()
@@ -398,6 +400,8 @@ class AlarmService : Service() {
         recordingFile = null
         recordingUri = null
         if (wasRecording) EventLog.add("VOICE RECORDING STOPPED")
+        // The recording is over: give the volumes back to the user (unless the alarm still sounds).
+        endActionVolumes()
         if (updateNotification && instance != null) {
             refreshNotification()
         }
@@ -554,7 +558,7 @@ class AlarmService : Service() {
         }
         player = null
         // Try another source; the bundled tone is the guaranteed last resort.
-        playBestAvailable()
+        if (!playBestAvailable()) endActionVolumes()
     }
 
     private fun speaker(): AudioDeviceInfo? =
@@ -654,24 +658,15 @@ class AlarmService : Service() {
         handler.removeCallbacks(volHoldTrigger)
     }
 
-    // ------------------------------------------------- volume pinning
-
-    private fun preferredVolume(stream: Int): Int {
-        val max = audio.getStreamMaxVolume(stream)
-        if (max <= 0) return 1
-        return (max * prefs.volumePct / 100f).roundToInt().coerceIn(1, max)
-    }
-
     /**
-     * Copies the current volumes/mute states once, so they can be restored when the app closes.
-     * The values are also written to disk: if the process is killed before it can restore them
-     * (task swiped away, "Close all", low memory), the next start puts the phone back to its real
-     * original levels before the alarm volume is pinned for the new session.
+     * Captures the phone's current volumes/mute states just before an action changes them, so they
+     * can be put back the moment that action stops. The values are also written to disk, so a run
+     * that is killed while the action is still going puts the phone's levels back on the next start.
      */
-    private fun saveOriginalsIfNeeded() {
-        if (volumesSaved) return
-        // A record left behind by an earlier run that never got to restore means the phone is still
-        // at the pinned levels: put the real originals back first, then capture them for this run.
+    private fun beginActionVolumes() {
+        if (actionVolumesSaved) return
+        // A record left behind by a run that was killed mid-action means the phone is still at the
+        // app's levels: put the user's real ones back first, then capture them for this action.
         restoreSavedVolumesFromDisk()
         origAlarmVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
         origMusicVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -691,14 +686,14 @@ class AlarmService : Service() {
         } catch (e: Exception) {
             false
         }
-        volumesSaved = true
+        actionVolumesSaved = true
         persistOriginals()
         EventLog.add(
             "volumes saved (alarm=$origAlarmVolume music=$origMusicVolume ring=$origRingVolume)"
         )
     }
 
-    /** Writes the pre-app volume state to disk so it survives an unclean shutdown. */
+    /** Writes the pre-action volume state to disk so it survives an unclean shutdown. */
     private fun persistOriginals() {
         prefs.savedVolumes = volumeSessionId + ";" + listOf(
             origAlarmVolume, origMusicVolume, origRingVolume,
@@ -709,9 +704,10 @@ class AlarmService : Service() {
     }
 
     /**
-     * Puts back the levels written by an earlier run that was killed before it could restore them
-     * (see [persistOriginals]) and clears that record. The caller then captures the restored levels
-     * as this session's originals, so the phone always ends up back at its true pre-app volumes.
+     * Puts back the levels written by an earlier run that was killed while its action was still
+     * running (see [persistOriginals]) and clears that record. The caller then captures the restored
+     * levels as this action's own starting point, so the phone always ends up back at the user's
+     * volumes.
      */
     private fun restoreSavedVolumesFromDisk() {
         val saved = prefs.savedVolumes ?: return
@@ -723,76 +719,33 @@ class AlarmService : Service() {
         restoreStream(AudioManager.STREAM_ALARM, values[0], values[3] == 1)
         restoreStream(AudioManager.STREAM_MUSIC, values[1], values[4] == 1)
         restoreStream(AudioManager.STREAM_RING, values[2], values[5] == 1)
-        EventLog.add("volumes from the previous run were put back before arming again")
+        EventLog.add("volumes from the previous run were put back (it was killed mid-action)")
     }
 
     /**
-     * 1) Applies the preset sound volume immediately (even before the alarm plays).
-     * 2) Keeps the streams the volume keys adjust away from zero, so a Volume Down
-     *    press can always be detected. Skipped while a hold is in progress, otherwise the hold's own
-     *    volume decrease would be undone and the detection would never see 2 seconds.
+     * Puts the phone's volumes back once no action is running any more. Called when the alarm sound
+     * stops and when a recording stops; it does nothing while the other action is still using the
+     * volume, so the levels only return when the app is really finished with them.
      */
-    private fun pinVolumes() {
-        saveOriginalsIfNeeded()
-        val before = snapshotVolumes()
-        try {
-            // Skipped entirely while a Volume Down hold is in progress: the hold's own volume
-            // decrease must not be undone, otherwise the 2-second hold would never be detected.
-            if (volHoldStartAt == 0L) {
-                enforceVolume() // alarm stream = preset volume, un-muted
-                // Media is what the volume keys adjust on modern Android: keep it at
-                // least as loud as the preset volume (never below the current level, never zero).
-                pinStreamToPreset(AudioManager.STREAM_MUSIC)
-                // Ringer, for devices that route the volume keys there: at least one step.
-                pinStreamNonZero(AudioManager.STREAM_RING)
-            }
-        } catch (e: SecurityException) {
-            // Some phones refuse volume changes while Do Not Disturb is active and no DND access was granted.
-        }
-        // The app's own volume writes also fire the content observer. When (and only when) a write
-        // actually changed a volume, re-baseline the snapshot so the fallback Volume Down detector
-        // cannot mistake the app's own pinning for a Volume Up press and cancel an in-progress hold.
-        val after = snapshotVolumes()
-        if (!after.contentEquals(before)) lastVolumes = after
-    }
-
-    /** Raises a stream to at least the preset volume percentage (never below its current level). */
-    private fun pinStreamToPreset(stream: Int) {
-        try {
-            val target = preferredVolume(stream)
-            if (audio.isStreamMute(stream)) {
-                audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
-            }
-            if (audio.getStreamVolume(stream) < target) {
-                audio.setStreamVolume(stream, target, 0)
-            }
-        } catch (e: Exception) {
-        }
-    }
-
-    /** Makes sure a stream is not muted and at least one step loud (never zero). */
-    private fun pinStreamNonZero(stream: Int) {
-        try {
-            if (audio.isStreamMute(stream)) {
-                audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
-            }
-            if (audio.getStreamVolume(stream) <= 0) {
-                audio.setStreamVolume(stream, 1, 0)
-            }
-        } catch (e: Exception) {
-        }
+    private fun endActionVolumes() {
+        if (actionRunning) return
+        restoreActionVolumes()
     }
 
     /**
-     * Restores the volumes/mute states that were in place before the app started and drops the
-     * on-disk record. Called when the app closes ([onTaskRemoved] / [onDestroy]); safe to call twice.
+     * Puts the phone's volumes/mute states back to the levels they had before the running action
+     * started, and drops the on-disk record. Safe to call twice; never runs while an action is still
+     * using the volume.
      */
-    private fun restoreVolumes() {
-        if (!volumesSaved) return
+    private fun restoreActionVolumes() {
+        if (!actionVolumesSaved || actionRunning) return
         restoreStream(AudioManager.STREAM_ALARM, origAlarmVolume, origAlarmMuted)
         restoreStream(AudioManager.STREAM_MUSIC, origMusicVolume, origMusicMuted)
         restoreStream(AudioManager.STREAM_RING, origRingVolume, origRingMuted)
-        volumesSaved = false
+        actionVolumesSaved = false
+        // The app just wrote the volumes back: restart the Volume Down detection from a clean
+        // baseline so the restore is never mistaken for a Volume Up press.
+        lastVolumes = snapshotVolumes()
         // Clear the on-disk record only when it is the one this instance wrote: a newer instance may
         // already have replaced it while this (re-armed) instance was shutting down.
         if (prefs.savedVolumes?.startsWith("$volumeSessionId;") == true) prefs.savedVolumes = null

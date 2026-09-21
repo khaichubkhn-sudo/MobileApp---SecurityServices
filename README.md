@@ -1,8 +1,9 @@
 # Security Services (Android)
 
-A loud, fixed-volume alarm you arm by hand. Plays an audio file you choose (wav, mp3, m4a, flac, ogg, ...)
-from the PLAY button. While armed, holding Volume Down for 2 seconds either plays the alarm or starts microphone
-recording, according to the selected action (locked, unlocked, or with the screen off).
+A loud, fixed-volume alarm that arms itself whenever the app is open. Plays an audio file you choose
+(wav, mp3, m4a, flac, ogg, ...) from the PLAY button. While armed, holding Volume Down for 2 seconds either
+plays the alarm or starts microphone recording, according to the selected action (locked, unlocked, or with
+the screen off).
 
 ## Part A - Get the APK onto your phone
 
@@ -69,11 +70,12 @@ recording, according to the selected action (locked, unlocked, or with the scree
 * Press Home/Back or lock the phone - it stays armed.
 * It switches off only if you swipe the app away in Recents / use "Close all" (reopen the app to re-arm).
   It never arms itself after a reboot.
-* **Volumes**: while armed the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
-  (even before the alarm plays) and keeps the media / ringer volumes above zero, so your Volume Down trigger always has
-  room to be detected. **When the app closes (swipe away in Recents / "Close all") the alarm, media and ringer volumes
-  are put back to exactly the levels they had before the app started.** Those pre-app levels are also stored on the
-  device, so they are still restored correctly even if Android kills the app without a clean shutdown.
+* **Volumes**: the app applies its own **Alarm volume** only while an action is running - i.e. while the alarm is
+  sounding or a voice recording is going. **As soon as that action stops, the alarm, media and ringer volumes go back
+  to exactly the levels they had before it started, and while nothing is running the volume is yours to adjust.**
+  Closing the app (swipe away in Recents / "Close all") stops any running action, so the volumes are handed back
+  then too. The pre-action levels are also stored on the device, so they are still restored correctly even if Android
+  kills the app while an action was running.
 * **Sound or record**: the selected Volume Down action starts after a 2-second hold (works locked, unlocked, or
    with the screen off; Volume Up is ignored). With recording selected, the hold starts a voice recording and the
    ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.
@@ -90,9 +92,9 @@ recording, according to the selected action (locked, unlocked, or with the scree
   1. An Accessibility Service that reads the actual Volume Down key events (most precise). This depends on
      your phone brand / Android version - some devices reserve volume-key handling even when the service is enabled.
   2. A back-up detector that watches the system volume: holding Volume Down lowers it repeatedly, which the app
-     sees even without accessibility. While armed the app keeps the media volume at your chosen Alarm volume level
-     and the ringer above zero, so this detector normally has room to work. A single short press is still not
-     enough (it must be a 2-second hold).
+     sees even without accessibility. It needs the volume to be above its minimum for the keys to change anything,
+     so if you keep the phone's media volume at zero, rely on the accessibility service above. A single short press
+     is still not enough (it must be a 2-second hold).
 * An alarm cannot beat a powered-off phone, a killed process, or hardware volume limiters some Bluetooth devices apply
   (Force phone speaker helps). Android "Total silence" DND blocks alarms unless DND access is granted (Part B-6).
 * Loud sounds can damage hearing at close range.

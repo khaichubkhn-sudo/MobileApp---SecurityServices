@@ -1,5 +1,5 @@
 - This app for Android phone, compiled with Gradle on GitHub Actions work flow, not local computer. Result file: .apk
 - Result file is installed via adb.exe uninstall/install with phone Developer option enabled via USB from computer.
-- The app would maintains its own setting volume once Alarm is armed. Upon close, the app would restore back original volume of the phone before app starts.
+- The app applies its own alarm-volume setting only while the alarm sound is playing or a voice recording is running. When that action stops (or the app is closed), the phone's alarm/media/ringer volumes are returned to the levels they had before the action started, and while nothing is running the volume can be adjusted by the user.
 - It works only when screen lock is seen, activated by continuous 2s hold of Volume Down button in screen lock.
 - Note: it may contains some redundant files from Gradle trying to build on local computer (to be ignored). 

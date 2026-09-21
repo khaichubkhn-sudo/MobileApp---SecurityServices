@@ -38,9 +38,10 @@ class Prefs(context: Context) {
         set(v) { sp.edit().putString("recording_tree_uri", v).apply() }
 
     /**
-     * The phone's volume/mute state captured when the alarm service armed, encoded as
+     * The phone's volume/mute state captured just before the app's own volume setting is applied -
+     * i.e. when the alarm sound starts or a voice recording starts - encoded as
      * "alarm,music,ring,alarmMuted,musicMuted,ringMuted" (each mute flag is 1 or 0). Kept on disk so
-     * the original levels can be put back even if the app is killed without a clean shutdown.
+     * the levels can be put back even if the app is killed while the action is still running.
      */
     var savedVolumes: String?
         get() = sp.getString("saved_volumes", null)

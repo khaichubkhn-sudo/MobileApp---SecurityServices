@@ -32,6 +32,18 @@ class Prefs(context: Context) {
         get() = sp.getString("volume_down_action", ACTION_ALARM) ?: ACTION_ALARM
         set(v) { sp.edit().putString("volume_down_action", v).apply() }
 
+    var sendLocationOnVolumeDown: Boolean
+        get() = sp.getBoolean("send_location_on_volume_down", false)
+        set(v) { sp.edit().putBoolean("send_location_on_volume_down", v).apply() }
+
+    var locationPhoneNumbers: String
+        get() = sp.getString("location_phone_numbers", "") ?: ""
+        set(v) { sp.edit().putString("location_phone_numbers", v).apply() }
+
+    var lastLocationMessage: String
+        get() = sp.getString("last_location_message", "") ?: ""
+        set(v) { sp.edit().putString("last_location_message", v).apply() }
+
     /** Persisted Storage Access Framework tree URI for recordings, or null for the Music folder. */
     var recordingTreeUri: String?
         get() = sp.getString("recording_tree_uri", null)

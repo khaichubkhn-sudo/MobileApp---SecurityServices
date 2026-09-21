@@ -8,6 +8,9 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
@@ -23,6 +26,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.os.Environment
+import android.telephony.SmsManager
 import android.provider.Settings
 import android.provider.MediaStore
 import android.provider.DocumentsContract
@@ -63,6 +67,8 @@ class AlarmService : Service() {
          * Must be comfortably larger than the OS key-repeat delay (~500 ms) but smaller than HOLD_MS.
          */
         private const val HOLD_GAP_MS = 800L
+        private const val LOCATION_TIMEOUT_MS = 30_000L
+        private const val LOCATION_TRIGGER_DEBOUNCE_MS = 3_000L
 
         /** Streams whose volume the phone's volume keys may adjust. */
         private val VOLUME_STREAMS = intArrayOf(
@@ -99,6 +105,10 @@ class AlarmService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var audio: AudioManager
     private lateinit var prefs: Prefs
+    private lateinit var locationManager: LocationManager
+    private var locationRequestActive = false
+    private var locationListener: LocationListener? = null
+    private var lastLocationTriggerAt = 0L
 
     private val recordingSizeCheck = object : Runnable {
         override fun run() {
@@ -188,6 +198,7 @@ class AlarmService : Service() {
         super.onCreate()
         instance = this
         audio = getSystemService(AudioManager::class.java)
+        locationManager = getSystemService(LocationManager::class.java)
         prefs = Prefs(this)
         EventLog.clear()
         EventLog.add("armed")
@@ -238,6 +249,7 @@ class AlarmService : Service() {
         // stopSound()/stopRecording() above already gave the volumes back if they were the last
         // action; this is a safety net for an action that ended without either being called.
         handler.removeCallbacks(volumeGuard)
+        finishLocationRequest()
         restoreActionVolumes()
         try {
             contentResolver.unregisterContentObserver(volumeObserver)
@@ -645,11 +657,104 @@ class AlarmService : Service() {
 
     /** Applies the user's selected action for a completed Volume Down hold. */
     fun triggerVolumeAction() {
+        sendLocationIfConfigured()
         if (prefs.volumeDownAction == Prefs.ACTION_RECORD) {
             startRecording()
         } else if (!isPlaying) {
             startAlarm()
         }
+    }
+
+    /** Gets one valid location, then sends one Google Maps link to each configured number. */
+    private fun sendLocationIfConfigured() {
+        if (!prefs.sendLocationOnVolumeDown) return
+        val numbers = prefs.locationPhoneNumbers
+            .split(',', ';', '\n', '\r')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (numbers.isEmpty()) {
+            EventLog.add("GPS sharing enabled, but no phone numbers were configured")
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("GPS sharing skipped: location permission is not granted")
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.SEND_SMS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("GPS sharing skipped: SMS permission is not granted")
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (locationRequestActive || now - lastLocationTriggerAt < LOCATION_TRIGGER_DEBOUNCE_MS) {
+            EventLog.add("GPS sharing ignored duplicate trigger")
+            return
+        }
+        lastLocationTriggerAt = now
+        if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) &&
+            !locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        ) {
+            EventLog.add("GPS sharing skipped: Location is turned off on the phone")
+            return
+        }
+
+        locationRequestActive = true
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                finishLocationRequest()
+                val mapsUrl = "https://www.google.com/maps/search/?api=1&query=" +
+                    "${location.latitude},${location.longitude}"
+                val message = "Security Services location: $mapsUrl " +
+                    "(accuracy ${location.accuracy.roundToInt()}m)"
+                prefs.lastLocationMessage = message
+                EventLog.add("GPS DATA: ${location.latitude},${location.longitude}")
+                EventLog.add("GPS SMS test data: $mapsUrl")
+                val sms = SmsManager.getDefault()
+                numbers.forEach { number ->
+                    try {
+                        sms.sendTextMessage(number, null, message, null, null)
+                        EventLog.add("GPS SMS sent to $number")
+                    } catch (e: Exception) {
+                        EventLog.add("GPS SMS failed for $number: ${e.message ?: e.javaClass.simpleName}")
+                    }
+                }
+            }
+        }
+        locationListener = listener
+        try {
+            val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+                .filter { locationManager.isProviderEnabled(it) }
+            providers.forEach { provider ->
+                locationManager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+            }
+            EventLog.add("waiting for a valid GPS location before sending SMS")
+            handler.postDelayed({
+                if (locationRequestActive) {
+                    finishLocationRequest()
+                    EventLog.add("GPS sharing timed out before a valid location was available")
+                }
+            }, LOCATION_TIMEOUT_MS)
+        } catch (e: Exception) {
+            finishLocationRequest()
+            EventLog.add("GPS sharing failed: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    private fun finishLocationRequest() {
+        locationListener?.let {
+            try {
+                locationManager.removeUpdates(it)
+            } catch (e: Exception) {
+            }
+        }
+        locationListener = null
+        locationRequestActive = false
     }
 
     private fun resetVolumeHold() {

@@ -20,6 +20,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -38,6 +39,7 @@ class MainActivity : Activity() {
         const val REQ_RECORDING_FOLDER = 102
         const val REQ_MICROPHONE = 103
         const val REQ_STORAGE = 104
+        const val REQ_LOCATION_SMS = 105
         const val RED = 0xFFC62828.toInt()
         const val GREEN = 0xFF2E7D32.toInt()
         const val BLUE = 0xFF1565C0.toInt()
@@ -178,6 +180,38 @@ class MainActivity : Activity() {
             }
         }
         actionCard.addView(actionGroup)
+        val locationCheck = CheckBox(this).apply {
+            text = "Send current GPS location by SMS after the trigger"
+            isChecked = prefs.sendLocationOnVolumeDown
+            setOnCheckedChangeListener { _, checked ->
+                prefs.sendLocationOnVolumeDown = checked
+                if (checked) requestLocationSmsPermissions()
+                rearm()
+            }
+        }
+        gap(locationCheck)
+        actionCard.addView(locationCheck)
+        val locationNumbers = EditText(this).apply {
+            hint = "Phone numbers (comma or newline separated)"
+            setText(prefs.locationPhoneNumbers)
+            inputType = android.text.InputType.TYPE_CLASS_PHONE or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    prefs.locationPhoneNumbers = s?.toString() ?: ""
+                }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
+        gap(locationNumbers)
+        actionCard.addView(locationNumbers)
+        actionCard.addView(tv(
+            "The app waits for a valid location before sending one Google Maps link per number. " +
+                "Location must be enabled on the phone; Android does not allow apps to silently switch it on.",
+            12f, false, GREY
+        ))
         // Microphone permission state (informational only: the permission is requested
         // automatically, so there is no button and no extra tap needed).
         micPermView = tv("", 14f, true)
@@ -413,6 +447,21 @@ class MainActivity : Activity() {
         requestPermissions(missing.toTypedArray(), REQ_MICROPHONE)
     }
 
+    private fun requestLocationSmsPermissions() {
+        val missing = buildList {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+            if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            if (checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.SEND_SMS)
+            }
+        }
+        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_LOCATION_SMS)
+    }
+
     private fun pickSound() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -457,6 +506,15 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        if (requestCode == REQ_LOCATION_SMS) {
+            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                EventLog.add("location and SMS permissions granted")
+            } else {
+                EventLog.add("location/SMS permission denied - location messages are unavailable")
+            }
+            refresh()
+            return
+        }
         if (requestCode != REQ_MICROPHONE) return
         // Some Wear OS builds only grant the first permission of a bundle; request the rest again
         // (bounded) so each gets its own dialog instead of being silently dropped.
@@ -538,6 +596,9 @@ class MainActivity : Activity() {
         dndView.text = if (nm.isNotificationPolicyAccessGranted) "Override allowed ✓" else "Not allowed (alarm still sounds in normal Do Not Disturb)"
 
         logView.text = EventLog.dump()
+        if (prefs.lastLocationMessage.isNotEmpty()) {
+            logView.text = "Last GPS test data:\n${prefs.lastLocationMessage}\n\n${logView.text}"
+        }
     }
 
     private fun updateVolLabel() {

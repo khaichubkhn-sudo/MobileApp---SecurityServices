@@ -1,8 +1,8 @@
-# Security Alarm (Android)
+# Security Services - KC (Android)
 
 A loud, fixed-volume alarm you arm by hand. Plays an audio file you choose (wav, mp3, m4a, flac, ogg, ...)
-from the PLAY button, or by holding the Volume Down button for 2 seconds whenever the alarm is armed
-(locked, unlocked, or with the screen off).
+from the PLAY button. While armed, holding Volume Down for 2 seconds either plays the alarm or starts microphone
+recording, according to the selected action (locked, unlocked, or with the screen off).
 
 ## Part A - Get the APK onto your phone
 
@@ -49,15 +49,19 @@ from the PLAY button, or by holding the Volume Down button for 2 seconds wheneve
 7. Recommended so the phone doesn't stop the armed app in the background:
    Settings > Apps > Security Alarm > Battery > **Unrestricted** (Samsung: also "Never sleeping apps").
 
+8. To use voice recording, select **Start microphone voice recording** in the Volume Down action section.
+   Choose a folder if needed; otherwise files are saved under **Music/Security Services**. Tap **STOP RECORDING**
+   in the app to finish the current M4A file. Recording also stops when the file reaches 300 MB or the app is closed.
+
 ## Part C - Daily use
-* **ARM ALARM** when you want protection. A quiet "Security alarm ARMED" notification appears (hidden on the lock screen).
+* **ARM ALARM** when you want protection. A quiet "Security Services - KC ARMED" notification appears (hidden on the lock screen).
 * Press Home/Back or lock the phone - it stays armed.
 * **Disarm** = DISARM button, swipe the app away in Recents, or "Close all". It never arms itself after a reboot.
 * **Volumes**: as soon as you ARM, the app applies your chosen **Alarm volume** to the phone's ALARM channel right away
   (even before the alarm plays) and keeps the media / ringer volumes above zero, so your Volume Down trigger always has
   room to be detected. When the app closes (disarm / swipe away), the original volumes are restored.
-* **Sound it**: PLAY button, or whenever the alarm is armed press and hold **Volume Down** for 2 seconds
-   (works locked, unlocked, or with the screen off; Volume Up is ignored).
+* **Sound or record**: the selected Volume Down action starts after a 2-second hold (works locked, unlocked, or
+   with the screen off; Volume Up is ignored). Android requires a foreground-service notification while recording.
 * **Stop it**: open the app, tap **STOP**.
 
 ## Part D - Test the Volume Down trigger

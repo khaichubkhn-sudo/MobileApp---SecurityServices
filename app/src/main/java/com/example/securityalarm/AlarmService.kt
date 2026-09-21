@@ -13,6 +13,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
@@ -21,7 +22,15 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.os.Environment
 import android.provider.Settings
+import android.provider.MediaStore
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -35,6 +44,7 @@ class AlarmService : Service() {
     companion object {
         const val ACTION_ARM = "com.example.securityalarm.ARM"
         const val ACTION_PLAY = "com.example.securityalarm.PLAY"
+        const val ACTION_STOP_RECORDING = "com.example.securityalarm.STOP_RECORDING"
         private const val CHANNEL_ID = "alarm_status"
         private const val NOTIF_ID = 1001
 
@@ -65,14 +75,33 @@ class AlarmService : Service() {
 
         val isArmed: Boolean get() = instance != null
         val isPlaying: Boolean get() = instance?.player != null
+        val isRecording: Boolean get() = instance?.recorder != null
     }
 
     private var player: MediaPlayer? = null
+    private var recorder: MediaRecorder? = null
+    private var recordingFile: File? = null
+    private var recordingUri: Uri? = null
+    private var recordingFd: android.os.ParcelFileDescriptor? = null
+    private var recordingForeground = false
+    private val recordingLimitBytes = 300L * 1024L * 1024L
     private var focusRequest: AudioFocusRequest? = null
     private var savedFilter = -1
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var audio: AudioManager
     private lateinit var prefs: Prefs
+
+    private val recordingSizeCheck = object : Runnable {
+        override fun run() {
+            if (recorder == null) return
+            if (recordingSize() >= recordingLimitBytes) {
+                EventLog.add("recording stopped at 300 MB")
+                stopRecording()
+            } else {
+                handler.postDelayed(this, 5_000L)
+            }
+        }
+    }
 
     // ------------------------------------------------- volume pinning (never silent while armed)
     private var volumesSaved = false
@@ -166,7 +195,10 @@ class AlarmService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (intent?.action == ACTION_PLAY) startAlarm()
+        when (intent?.action) {
+            ACTION_PLAY -> startAlarm()
+            ACTION_STOP_RECORDING -> stopRecording()
+        }
         return START_NOT_STICKY // never restarted automatically => never "armed" behind the user's back
     }
 
@@ -180,6 +212,7 @@ class AlarmService : Service() {
 
     override fun onDestroy() {
         stopSound(updateNotification = false)
+        stopRecording(updateNotification = false)
         resetVolumeHold()
         handler.removeCallbacks(volumePin)
         restoreVolumes()
@@ -196,6 +229,7 @@ class AlarmService : Service() {
 
     /** Start (or restart) the alarm sound. Safe to call repeatedly. */
     fun startAlarm() {
+        stopRecording(updateNotification = false)
         stopSound(updateNotification = false)
         resetVolumeHold() // no stale hold detection once the alarm is sounding
         overrideDoNotDisturb()
@@ -221,6 +255,123 @@ class AlarmService : Service() {
         abandonFocus()
         restoreDoNotDisturb()
         if (updateNotification) refreshNotification()
+    }
+
+    /** Starts microphone capture directly to a file; MediaRecorder performs the streaming writes. */
+    fun startRecording() {
+        if (recorder != null) return
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            EventLog.add("recording failed: microphone permission missing")
+            return
+        }
+        try {
+            recordingForeground = true
+            goForeground()
+            val output = createRecordingOutput()
+            val activeRecorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
+            activeRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            activeRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            activeRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            activeRecorder.setAudioEncodingBitRate(128_000)
+            activeRecorder.setAudioSamplingRate(44_100)
+            activeRecorder.setOutputFile(output.fileDescriptor)
+            activeRecorder.prepare()
+            activeRecorder.start()
+            recorder = activeRecorder
+            handler.post(recordingSizeCheck)
+            EventLog.add("VOICE RECORDING STARTED")
+            refreshNotification()
+        } catch (e: Exception) {
+            EventLog.add("recording failed: ${e.javaClass.simpleName}")
+            recorder?.release()
+            recorder = null
+            recordingFd?.close()
+            recordingFd = null
+            recordingFile = null
+            recordingUri?.let { contentResolver.delete(it, null, null) }
+            recordingUri = null
+            recordingForeground = false
+            goForeground()
+        }
+    }
+
+    fun stopRecording(updateNotification: Boolean = true) {
+        handler.removeCallbacks(recordingSizeCheck)
+        recorder?.let {
+            try {
+                it.stop()
+            } catch (e: Exception) {
+            }
+            it.release()
+        }
+        val uri = recordingUri
+        if (uri != null && Build.VERSION.SDK_INT >= 29) {
+            val values = android.content.ContentValues().apply {
+                put(MediaStore.Audio.Media.IS_PENDING, 0)
+            }
+            try {
+                contentResolver.update(uri, values, null, null)
+            } catch (e: Exception) {
+            }
+        }
+        recordingFd?.close()
+        recorder = null
+        recordingFd = null
+        recordingFile = null
+        recordingUri = null
+        recordingForeground = false
+        if (updateNotification && instance != null) {
+            goForeground()
+            EventLog.add("VOICE RECORDING STOPPED")
+            refreshNotification()
+        }
+    }
+
+    private fun createRecordingOutput(): java.io.FileDescriptor {
+        val name = "voice_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a"
+        val treeUri = prefs.recordingTreeUri?.let { Uri.parse(it) }
+        if (treeUri != null) {
+            val uri = DocumentsContract.createDocument(contentResolver, treeUri, "audio/mp4", name)
+                ?: throw IllegalStateException("Could not create recording file")
+            recordingUri = uri
+            recordingFd = contentResolver.openFileDescriptor(uri, "w")
+                ?: throw IllegalStateException("Could not open recording file")
+            return recordingFd!!.fileDescriptor
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = android.content.ContentValues().apply {
+                put(MediaStore.Audio.Media.DISPLAY_NAME, name)
+                put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
+                put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Security Services")
+                put(MediaStore.Audio.Media.IS_PENDING, 1)
+            }
+            recordingUri = contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Could not create Music recording")
+            recordingFd = contentResolver.openFileDescriptor(recordingUri!!, "w")
+                ?: throw IllegalStateException("Could not open Music recording")
+            return recordingFd!!.fileDescriptor
+        }
+        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Security Services")
+        if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Could not create Music folder")
+        val file = File(directory, name)
+        recordingFile = file
+        recordingFd = android.os.ParcelFileDescriptor.open(
+            file,
+            android.os.ParcelFileDescriptor.MODE_CREATE or android.os.ParcelFileDescriptor.MODE_WRITE_ONLY
+        )
+        return recordingFd!!.fileDescriptor
+    }
+
+    private fun recordingSize(): Long {
+        recordingFile?.let { return it.length() }
+        val uri = recordingUri ?: return 0L
+        return try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
     }
 
     fun disarm() {
@@ -379,8 +530,17 @@ class AlarmService : Service() {
 
     private fun triggerVolumeHold() {
         EventLog.add("TRIGGER: Volume Down held 2s (volume detection)")
-        if (!isPlaying) startAlarm()
+        triggerVolumeAction()
         resetVolumeHold()
+    }
+
+    /** Applies the user's selected action for a completed Volume Down hold. */
+    fun triggerVolumeAction() {
+        if (prefs.volumeDownAction == Prefs.ACTION_RECORD) {
+            startRecording()
+        } else if (!isPlaying) {
+            startAlarm()
+        }
     }
 
     private fun resetVolumeHold() {
@@ -558,7 +718,7 @@ class AlarmService : Service() {
         val playing = player != null
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (playing) "ALARM SOUNDING" else "Security alarm ARMED")
+            .setContentTitle(if (playing) "ALARM SOUNDING" else "Security Services - KC ARMED")
             .setContentText(
                 if (playing) "Unlock the phone and open the app to stop it"
                 else "Swipe the app away in Recents to disarm"
@@ -572,7 +732,9 @@ class AlarmService : Service() {
     private fun goForeground() {
         val n = buildNotification()
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                if (recordingForeground) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+            startForeground(NOTIF_ID, n, type)
         } else {
             startForeground(NOTIF_ID, n)
         }

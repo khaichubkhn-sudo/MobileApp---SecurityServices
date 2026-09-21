@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Security Alarm</string>
-    <string name="a11y_label">Security Alarm Volume Down trigger</string>
-    <string name="a11y_description">Lets Security Alarm notice when the Volume Down button is held down for 2 seconds (whether the phone is locked, unlocked, or the screen is off), so it can sound the alarm. It only reacts while the alarm is armed inside the app, and it does not read or store anything else.</string>
+    <string name="app_name">Security Services - KC</string>
+    <string name="a11y_label">Security Services - KC Volume Down trigger</string>
+    <string name="a11y_description">Lets Security Services - KC notice when the Volume Down button is held down for 2 seconds while armed.</string>
 </resources>

@@ -22,6 +22,8 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
@@ -33,6 +35,9 @@ class MainActivity : Activity() {
     private companion object {
         const val REQ_PICK = 100
         const val REQ_NOTIF = 101
+        const val REQ_RECORDING_FOLDER = 102
+        const val REQ_MICROPHONE = 103
+        const val REQ_STORAGE = 104
         const val RED = 0xFFC62828.toInt()
         const val GREEN = 0xFF2E7D32.toInt()
         const val BLUE = 0xFF1565C0.toInt()
@@ -46,6 +51,7 @@ class MainActivity : Activity() {
 
     private lateinit var statusView: TextView
     private lateinit var soundView: TextView
+    private lateinit var recordingView: TextView
     private lateinit var volLabel: TextView
     private lateinit var armBtn: Button
     private lateinit var playBtn: Button
@@ -77,7 +83,7 @@ class MainActivity : Activity() {
         }
         setContentView(scroll)
 
-        root.addView(tv("Security Alarm", 26f, true))
+        root.addView(tv("Security Services - KC", 26f, true))
 
         // ---- status
         val statusCard = card()
@@ -124,9 +130,45 @@ class MainActivity : Activity() {
         })
         root.addView(soundCard)
 
+        // ---- Volume Down action
+        val actionCard = card()
+        actionCard.addView(tv("2. Volume Down action", 16f, true))
+        actionCard.addView(tv("Choose what starts after the Volume Down button is held for 2 seconds.", 14f))
+        val actionGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.VERTICAL
+            val alarmOption = RadioButton(this@MainActivity).apply {
+                text = "Play the alarm sound"
+                id = 1
+            }
+            val recordOption = RadioButton(this@MainActivity).apply {
+                text = "Start microphone voice recording"
+                id = 2
+            }
+            addView(alarmOption)
+            addView(recordOption)
+            check(if (prefs.volumeDownAction == Prefs.ACTION_RECORD) 2 else 1)
+            setOnCheckedChangeListener { _, checkedId ->
+                prefs.volumeDownAction = if (checkedId == 2) Prefs.ACTION_RECORD else Prefs.ACTION_ALARM
+                if (checkedId == 2) requestRecordingPermissions()
+                refresh()
+            }
+        }
+        actionCard.addView(actionGroup)
+        recordingView = tv("", 14f)
+        gap(recordingView)
+        actionCard.addView(recordingView)
+        actionCard.addView(button("Choose recording folder", BLUE) { pickRecordingFolder() }.also { gap(it) })
+        actionCard.addView(button("STOP RECORDING", GREY) { AlarmService.instance?.stopRecording() }.also { gap(it) })
+        actionCard.addView(tv(
+            "Recordings are saved continuously as M4A audio. The default is the phone's Music/Security Services folder. " +
+                "Android requires a small foreground-service status notification while the microphone is active; it is hidden on the lock screen.",
+            12f, false, GREY
+        ))
+        root.addView(actionCard)
+
         // ---- arm / play
         val armCard = card()
-        armCard.addView(tv("2. Arm and play", 16f, true))
+        armCard.addView(tv("3. Arm and play", 16f, true))
         armBtn = button("ARM ALARM", GREEN) { toggleArm() }
         gap(armBtn)
         armCard.addView(armBtn)
@@ -147,7 +189,7 @@ class MainActivity : Activity() {
 
         // ---- Volume Down trigger
         val lockCard = card()
-        lockCard.addView(tv("3. Volume Down trigger", 16f, true))
+        lockCard.addView(tv("4. Volume Down trigger", 16f, true))
         lockCard.addView(tv(
             "While ARMED, press and hold the Volume Down button for 2 seconds. " +
                 "The alarm sounds when it has been held for 2 seconds - locked, unlocked or with the screen off.",
@@ -160,14 +202,14 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }.also { gap(it) })
         lockCard.addView(tv(
-            "Turn on \"Security Alarm Volume Down trigger\" there (Installed / Downloaded apps).",
+            "Turn on \"Security Services - KC Volume Down trigger\" there (Installed / Downloaded apps).",
             12f, false, GREY
         ))
         root.addView(lockCard)
 
         // ---- Do Not Disturb
         val dndCard = card()
-        dndCard.addView(tv("4. Do Not Disturb (optional)", 16f, true))
+        dndCard.addView(tv("5. Do Not Disturb (optional)", 16f, true))
         dndView = tv("", 14f)
         dndCard.addView(dndView)
         dndCard.addView(button("Allow override of Do Not Disturb", BLUE) {
@@ -187,6 +229,7 @@ class MainActivity : Activity() {
         root.addView(logCard)
 
         requestNotificationPermission()
+        if (prefs.volumeDownAction == Prefs.ACTION_RECORD) requestRecordingPermissions()
     }
 
     override fun onResume() {
@@ -216,6 +259,27 @@ class MainActivity : Activity() {
         ui.postDelayed({ refresh() }, 300)
     }
 
+    private fun pickRecordingFolder() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        startActivityForResult(i, REQ_RECORDING_FOLDER)
+    }
+
+    private fun requestRecordingPermissions() {
+        val missing = mutableListOf<String>()
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (Build.VERSION.SDK_INT <= 28 &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_MICROPHONE)
+    }
+
     private fun pickSound() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -232,6 +296,18 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_RECORDING_FOLDER && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+            }
+            prefs.recordingTreeUri = uri.toString()
+            refresh()
+            return
+        }
         if (requestCode == REQ_PICK && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
             try {
@@ -260,10 +336,16 @@ class MainActivity : Activity() {
 
         when {
             playing -> { statusView.text = "🔊  ALARM SOUNDING"; statusView.setTextColor(RED) }
+            AlarmService.isRecording -> { statusView.text = "●  RECORDING VOICE"; statusView.setTextColor(RED) }
             armed -> { statusView.text = "🛡  ARMED - ready"; statusView.setTextColor(GREEN) }
             else -> { statusView.text = "○  Not armed"; statusView.setTextColor(GREY) }
         }
         soundView.text = "Sound: " + prefs.soundName.ifEmpty { "(none chosen - the phone's default alarm tone will play)" }
+        recordingView.text = "Recording folder: " + if (prefs.recordingTreeUri == null) {
+            "Music/Security Services (default)"
+        } else {
+            "Custom folder selected"
+        }
         updateVolLabel()
 
         armBtn.text = if (armed) "DISARM" else "ARM ALARM"

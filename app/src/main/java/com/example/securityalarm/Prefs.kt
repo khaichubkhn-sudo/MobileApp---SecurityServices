@@ -27,4 +27,19 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("force_speaker", true)
         set(v) { sp.edit().putBoolean("force_speaker", v).apply() }
 
+    /** Action performed after the Volume Down hold reaches two seconds. */
+    var volumeDownAction: String
+        get() = sp.getString("volume_down_action", ACTION_ALARM) ?: ACTION_ALARM
+        set(v) { sp.edit().putString("volume_down_action", v).apply() }
+
+    /** Persisted Storage Access Framework tree URI for recordings, or null for the Music folder. */
+    var recordingTreeUri: String?
+        get() = sp.getString("recording_tree_uri", null)
+        set(v) { sp.edit().putString("recording_tree_uri", v).apply() }
+
+    companion object {
+        const val ACTION_ALARM = "alarm"
+        const val ACTION_RECORD = "record"
+    }
+
 }

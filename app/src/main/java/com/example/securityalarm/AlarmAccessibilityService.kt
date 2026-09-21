@@ -101,9 +101,7 @@ class AlarmAccessibilityService : AccessibilityService() {
     private fun fire(alarm: AlarmService, why: String) {
         EventLog.add("TRIGGER: $why")
 
-        if (!AlarmService.isPlaying) {
-            alarm.startAlarm()
-        }
+        alarm.triggerVolumeAction()
     }
 
     private companion object {

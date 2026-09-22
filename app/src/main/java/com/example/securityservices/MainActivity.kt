@@ -39,6 +39,8 @@ class MainActivity : Activity() {
         const val REQ_MICROPHONE = 103
         const val REQ_STORAGE = 104
         const val REQ_LOCATION_SMS = 105
+        const val REQ_CALL_PHONE = 106
+        const val REQ_CAMERA = 107
         const val RED = 0xFFC62828.toInt()
         const val GREEN = 0xFF2E7D32.toInt()
         const val BLUE = 0xFF1565C0.toInt()
@@ -90,6 +92,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        if (!AlarmService.isArmed) AlarmService.resetSmsQuotaForAppStart()
         if (prefs.sendLocationOnVolumeDown && prefs.volumeDownAction != Prefs.ACTION_LOCATION) {
             prefs.volumeDownAction = Prefs.ACTION_LOCATION
         }
@@ -176,13 +179,19 @@ class MainActivity : Activity() {
                 text = "Send current GPS location by SMS"
                 id = 3
             }
+            val callOption = RadioButton(this@MainActivity).apply {
+                text = "Call the first phone number"
+                id = 4
+            }
             addView(alarmOption)
             addView(recordOption)
             addView(locationOption)
+            addView(callOption)
             check(
                 when (prefs.volumeDownAction) {
                     Prefs.ACTION_RECORD -> 2
                     Prefs.ACTION_LOCATION -> 3
+                    Prefs.ACTION_CALL -> 4
                     else -> 1
                 }
             )
@@ -190,11 +199,14 @@ class MainActivity : Activity() {
                 prefs.volumeDownAction = when (checkedId) {
                     2 -> Prefs.ACTION_RECORD
                     3 -> Prefs.ACTION_LOCATION
+                    4 -> Prefs.ACTION_CALL
                     else -> Prefs.ACTION_ALARM
                 }
                 prefs.sendLocationOnVolumeDown = checkedId == 3
                 if (checkedId == 2) requestRecordingPermissions()
                 if (checkedId == 3) requestLocationSmsPermissions()
+                if (checkedId == 4) requestCallPermission()
+                if (checkedId == 1) requestFlashlightPermission()
                 refresh()
                 rearm()
             }
@@ -364,6 +376,12 @@ class MainActivity : Activity() {
         }
         // If the Volume Down trigger service is off, open its settings page when the app starts.
         ui.postDelayed({ autoOpenAccessibilitySettings() }, 900)
+        if (prefs.volumeDownAction == Prefs.ACTION_CALL) {
+            ui.postDelayed({ requestCallPermission() }, 700)
+        }
+        if (prefs.volumeDownAction == Prefs.ACTION_ALARM) {
+            ui.postDelayed({ requestFlashlightPermission() }, 700)
+        }
     }
 
     override fun onResume() {
@@ -489,6 +507,24 @@ class MainActivity : Activity() {
         if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_LOCATION_SMS)
     }
 
+    private fun requestCallPermission() {
+        val missing = buildList {
+            if (checkSelfPermission(Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.CALL_PHONE)
+            }
+            if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.READ_PHONE_STATE)
+            }
+        }
+        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_CALL_PHONE)
+    }
+
+    private fun requestFlashlightPermission() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+        }
+    }
+
     private fun pickSound() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -533,6 +569,17 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        if (requestCode == REQ_CALL_PHONE) {
+            EventLog.add(
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                    "phone call permission granted"
+                } else {
+                    "phone call permission denied - calls are unavailable"
+                }
+            )
+            refresh()
+            return
+        }
         if (requestCode == REQ_LOCATION_SMS) {
             if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 EventLog.add("location and SMS permissions granted")

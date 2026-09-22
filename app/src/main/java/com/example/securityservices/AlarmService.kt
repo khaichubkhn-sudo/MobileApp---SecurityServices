@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.database.ContentObserver
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -20,6 +22,7 @@ import android.media.MediaRecorder
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -27,6 +30,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.os.Environment
 import android.telephony.SmsManager
+import android.telecom.TelecomManager
 import android.provider.Settings
 import android.provider.MediaStore
 import android.provider.DocumentsContract
@@ -69,6 +73,16 @@ class AlarmService : Service() {
         private const val HOLD_GAP_MS = 800L
         private const val LOCATION_TIMEOUT_MS = 30_000L
         private const val LOCATION_TRIGGER_DEBOUNCE_MS = 3_000L
+        private const val CALL_TRIGGER_DEBOUNCE_MS = 3_000L
+        private const val MAX_SMS_MESSAGES_PER_APP_START = 10
+        private const val FLASH_BLINK_MS = 500L
+
+        @Volatile
+        private var smsMessagesSentSinceAppStart = 0
+
+        fun resetSmsQuotaForAppStart() {
+            smsMessagesSentSinceAppStart = 0
+        }
 
         /** Streams whose volume the phone's volume keys may adjust. */
         private val VOLUME_STREAMS = intArrayOf(
@@ -106,9 +120,24 @@ class AlarmService : Service() {
     private lateinit var audio: AudioManager
     private lateinit var prefs: Prefs
     private lateinit var locationManager: LocationManager
+    private lateinit var cameraManager: CameraManager
     private var locationRequestActive = false
     private var locationListener: LocationListener? = null
     private var lastLocationTriggerAt = 0L
+    private var lastCallTriggerAt = 0L
+    private var flashlightCameraId: String? = null
+    private var flashlightOn = false
+
+    private val flashlightBlink = object : Runnable {
+        override fun run() {
+            if (player == null) {
+                stopFlashlightBlinking()
+                return
+            }
+            setFlashlight(!flashlightOn)
+            handler.postDelayed(this, FLASH_BLINK_MS)
+        }
+    }
 
     private val recordingSizeCheck = object : Runnable {
         override fun run() {
@@ -199,6 +228,7 @@ class AlarmService : Service() {
         instance = this
         audio = getSystemService(AudioManager::class.java)
         locationManager = getSystemService(LocationManager::class.java)
+        cameraManager = getSystemService(CameraManager::class.java)
         prefs = Prefs(this)
         EventLog.clear()
         EventLog.add("armed")
@@ -249,6 +279,7 @@ class AlarmService : Service() {
         // stopSound()/stopRecording() above already gave the volumes back if they were the last
         // action; this is a safety net for an action that ended without either being called.
         handler.removeCallbacks(volumeGuard)
+        stopFlashlightBlinking()
         finishLocationRequest()
         restoreActionVolumes()
         try {
@@ -275,6 +306,7 @@ class AlarmService : Service() {
         val ok = playBestAvailable()
         if (player != null) {
             handler.post(volumeGuard) // keep the chosen volume applied while it sounds
+            if (prefs.volumeDownAction == Prefs.ACTION_ALARM) startFlashlightBlinking()
         } else {
             endActionVolumes() // nothing started: leave the phone's volumes exactly as they were
         }
@@ -284,6 +316,7 @@ class AlarmService : Service() {
 
     fun stopSound(updateNotification: Boolean = true) {
         handler.removeCallbacks(volumeGuard)
+        stopFlashlightBlinking()
         player?.let {
             try {
                 it.stop()
@@ -659,8 +692,59 @@ class AlarmService : Service() {
     fun triggerVolumeAction() {
         when (prefs.volumeDownAction) {
             Prefs.ACTION_LOCATION -> sendLocationIfConfigured()
+            Prefs.ACTION_CALL -> callFirstNumberIfConfigured()
             Prefs.ACTION_RECORD -> startRecording()
             else -> if (!isPlaying) startAlarm()
+        }
+    }
+
+    /** Places one direct call to the first semicolon-separated number in the current input. */
+    private fun callFirstNumberIfConfigured() {
+        val number = prefs.locationPhoneNumbers
+            .split(';')
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() }
+        if (number == null) {
+            EventLog.add("phone call skipped: no phone number was configured")
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.CALL_PHONE) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("phone call skipped: CALL_PHONE permission is not granted")
+            return
+        }
+        val telecom = getSystemService(TelecomManager::class.java)
+            ?: run {
+                EventLog.add("phone call skipped: telecom service unavailable")
+                return
+            }
+        if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("phone call skipped: phone-state permission is not granted")
+            return
+        }
+        try {
+            if (telecom.isInCall) {
+                EventLog.add("phone call skipped: a call is already in progress")
+                return
+            }
+        } catch (e: SecurityException) {
+            EventLog.add("phone call skipped: could not check call state")
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastCallTriggerAt < CALL_TRIGGER_DEBOUNCE_MS) {
+            EventLog.add("phone call ignored duplicate trigger")
+            return
+        }
+        lastCallTriggerAt = now
+        try {
+            telecom.placeCall(Uri.parse("tel:${Uri.encode(number)}"), Bundle())
+            EventLog.add("phone call started to $number")
+        } catch (e: Exception) {
+            EventLog.add("phone call failed for $number: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
@@ -709,7 +793,7 @@ class AlarmService : Service() {
                 finishLocationRequest()
                 val mapsUrl = "https://www.google.com/maps/search/?api=1&query=" +
                     "${location.latitude},${location.longitude}"
-                val locationData = "Security Services location: $mapsUrl " +
+                val locationData = "My location: $mapsUrl " +
                     "(accuracy ${location.accuracy.roundToInt()}m)"
                 val prefix = prefs.locationSmsPrefix.trim()
                 val message = if (prefix.isEmpty()) locationData else "$prefix\n$locationData"
@@ -718,6 +802,18 @@ class AlarmService : Service() {
                 EventLog.add("GPS SMS test data: $mapsUrl")
                 val sms = SmsManager.getDefault()
                 numbers.forEach { number ->
+                    val slot = synchronized(AlarmService::class.java) {
+                        if (smsMessagesSentSinceAppStart >= MAX_SMS_MESSAGES_PER_APP_START) {
+                            false
+                        } else {
+                            smsMessagesSentSinceAppStart++
+                            true
+                        }
+                    }
+                    if (!slot) {
+                        EventLog.add("GPS SMS limit reached: maximum $MAX_SMS_MESSAGES_PER_APP_START messages since app start")
+                        return@forEach
+                    }
                     try {
                         sms.sendTextMessage(number, null, message, null, null)
                         EventLog.add("GPS SMS sent to $number")
@@ -745,6 +841,50 @@ class AlarmService : Service() {
             finishLocationRequest()
             EventLog.add("GPS sharing failed: ${e.message ?: e.javaClass.simpleName}")
         }
+    }
+
+    private fun startFlashlightBlinking() {
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("flashlight skipped: camera permission is not granted")
+            return
+        }
+        if (flashlightCameraId == null) {
+            flashlightCameraId = try {
+                cameraManager.cameraIdList.firstOrNull { id ->
+                    cameraManager.getCameraCharacteristics(id)
+                        .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                }
+            } catch (e: Exception) {
+                EventLog.add("flashlight unavailable: ${e.message ?: e.javaClass.simpleName}")
+                null
+            }
+        }
+        if (flashlightCameraId == null) {
+            EventLog.add("flashlight unavailable: no camera flash found")
+            return
+        }
+        handler.removeCallbacks(flashlightBlink)
+        handler.post(flashlightBlink)
+        EventLog.add("flashlight blinking with alarm")
+    }
+
+    private fun setFlashlight(enabled: Boolean) {
+        val id = flashlightCameraId ?: return
+        try {
+            cameraManager.setTorchMode(id, enabled)
+            flashlightOn = enabled
+        } catch (e: Exception) {
+            EventLog.add("flashlight failed: ${e.message ?: e.javaClass.simpleName}")
+            stopFlashlightBlinking()
+        }
+    }
+
+    private fun stopFlashlightBlinking() {
+        handler.removeCallbacks(flashlightBlink)
+        if (flashlightOn) setFlashlight(false)
+        flashlightOn = false
     }
 
     private fun finishLocationRequest() {

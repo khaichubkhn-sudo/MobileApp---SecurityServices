@@ -67,6 +67,7 @@ class Prefs(context: Context) {
         const val ACTION_ALARM = "alarm"
         const val ACTION_RECORD = "record"
         const val ACTION_LOCATION = "location"
+        const val ACTION_CALL = "call"
     }
 
 }

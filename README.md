@@ -83,8 +83,14 @@ the screen off).
 * **Location SMS**: select **Send current GPS location by SMS after the trigger**, enter phone numbers separated
    by semicolons, and optionally enter message content to place before the GPS data. Grant Location and SMS
    permissions when asked. The app waits for one valid location (up to 30 seconds), then sends one Google Maps link
-   to each distinct number. The link and sending result are shown temporarily in Troubleshooting. Android does not
+   to each distinct number, with a maximum of 10 SMS messages after each app start. The link and sending result are shown temporarily in Troubleshooting. Android does not
    allow an app to silently switch on the system Location setting, so Location must already be enabled on the phone.
+* **Phone call**: select **Call the first phone number** and enter one or more semicolon-separated numbers. After
+   the two-second Volume Down hold, the app calls the first number directly from its armed foreground service, only
+   when no call is already in progress, including while the screen is locked. Grant the phone-call permission when
+   Android asks.
+* **Alarm flashlight**: when **Play the alarm sound** is selected, the phone's camera flashlight blinks while the
+   alarm sounds and switches off when the alarm stops. Grant camera permission when Android asks.
 
 ## Part D - Test the Volume Down trigger
 1. Open the app (it arms itself), then press and hold **Volume Down** for 2 seconds (no need to lock the phone first -

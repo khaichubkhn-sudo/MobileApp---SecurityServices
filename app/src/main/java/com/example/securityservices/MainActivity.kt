@@ -30,6 +30,11 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 
+/**
+ * Main settings and control screen for Security Services.
+ *
+ * @author Chu Quang Khai (Khai Chu)
+ */
 class MainActivity : Activity() {
 
     private companion object {

@@ -2,7 +2,11 @@ package com.example.securityservices
 
 import android.content.Context
 
-/** Tiny wrapper around SharedPreferences for all user settings. */
+/**
+ * Tiny wrapper around SharedPreferences for all user settings.
+ *
+ * @author Chu Quang Khai (Khai Chu)
+ */
 class Prefs(context: Context) {
 
     private val sp = context.applicationContext

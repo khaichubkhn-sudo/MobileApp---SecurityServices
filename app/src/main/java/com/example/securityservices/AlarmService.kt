@@ -46,6 +46,8 @@ import kotlin.math.roundToInt
  *  - Started only by the user (ARM or PLAY button). Nothing starts it at boot.
  *  - stopWithTask=true + onTaskRemoved: swiping the app away / "Close all" stops it => disarmed.
  *  - Plays the sound on the ALARM audio stream at a fixed volume, re-enforced continuously.
+ *
+ * @author Chu Quang Khai (Khai Chu)
  */
 class AlarmService : Service() {
 

@@ -9,6 +9,8 @@ import android.view.accessibility.AccessibilityEvent
 /**
  * Volume Down trigger: while the alarm is ARMED, holding the Volume Down button for [HOLD_MS]
  * fires the alarm regardless of the screen state (locked, unlocked or off). Volume Up is ignored.
+ *
+ * @author Chu Quang Khai (Khai Chu)
  */
 class AlarmAccessibilityService : AccessibilityService() {
 

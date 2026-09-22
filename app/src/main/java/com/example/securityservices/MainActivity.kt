@@ -204,7 +204,10 @@ class MainActivity : Activity() {
                 }
                 prefs.sendLocationOnVolumeDown = checkedId == 3
                 if (checkedId == 2) requestRecordingPermissions()
-                if (checkedId == 3) requestLocationSmsPermissions()
+                if (checkedId == 3) {
+                    requestLocationSmsPermissions()
+                    notifyIfGpsDisabled()
+                }
                 if (checkedId == 4) requestCallPermission()
                 if (checkedId == 1) requestFlashlightPermission()
                 refresh()
@@ -505,6 +508,18 @@ class MainActivity : Activity() {
             }
         }
         if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_LOCATION_SMS)
+    }
+
+    private fun notifyIfGpsDisabled() {
+        val locationManager = getSystemService(android.location.LocationManager::class.java)
+        if (!locationManager.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) {
+            Toast.makeText(
+                this,
+                "GPS is turned off. Enable Location/GPS before triggering location SMS.",
+                Toast.LENGTH_LONG
+            ).show()
+            EventLog.add("GPS action selected while GPS is turned off")
+        }
     }
 
     private fun requestCallPermission() {

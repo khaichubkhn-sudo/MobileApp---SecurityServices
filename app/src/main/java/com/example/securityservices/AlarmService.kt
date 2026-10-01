@@ -79,6 +79,9 @@ class AlarmService : Service() {
         private const val MAX_SMS_MESSAGES_PER_APP_START = 10
         private const val FLASH_BLINK_MS = 500L
 
+        /** Minimum wait between two photo emails, so a repeated hold cannot spam the inbox. */
+        private const val EMAIL_PHOTO_DEBOUNCE_MS = 2_000L
+
         @Volatile
         private var smsMessagesSentSinceAppStart = 0
 
@@ -115,6 +118,13 @@ class AlarmService : Service() {
     private var recordingFd: android.os.ParcelFileDescriptor? = null
     /** Microphone type included in the foreground service type. Set once at service start. */
     private var recordingForeground = false
+
+    /**
+     * True once the running foreground service includes the camera type. Android 11+ requires this
+     * type before an app in the background may open the camera, so it is set at service start when
+     * possible and added on demand right before the first photo is captured.
+     */
+    private var cameraForeground = false
     private val recordingLimitBytes = 300L * 1024L * 1024L
     private var focusRequest: AudioFocusRequest? = null
     private var savedFilter = -1
@@ -127,6 +137,7 @@ class AlarmService : Service() {
     private var locationListener: LocationListener? = null
     private var lastLocationTriggerAt = 0L
     private var lastCallTriggerAt = 0L
+    private var lastPhotoEmailAt = 0L
     private var flashlightCameraId: String? = null
     private var flashlightOn = false
 
@@ -696,6 +707,7 @@ class AlarmService : Service() {
             Prefs.ACTION_LOCATION -> sendLocationIfConfigured()
             Prefs.ACTION_CALL -> callFirstNumberIfConfigured()
             Prefs.ACTION_RECORD -> startRecording()
+            Prefs.ACTION_EMAIL_PHOTO -> captureAndEmailPhoto()
             else -> if (!isPlaying) startAlarm()
         }
     }
@@ -747,6 +759,116 @@ class AlarmService : Service() {
             EventLog.add("phone call started to $number")
         } catch (e: Exception) {
             EventLog.add("phone call failed for $number: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Captures one photo with the phone camera and emails it to the address the user configured.
+     * Only ever runs after a completed Volume Down hold; a second trigger that arrives within
+     * EMAIL_PHOTO_DEBOUNCE_MS of the previous one is ignored so the inbox cannot be spammed.
+     */
+    fun captureAndEmailPhoto() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPhotoEmailAt < EMAIL_PHOTO_DEBOUNCE_MS) {
+            EventLog.add("photo email ignored: only one every ${EMAIL_PHOTO_DEBOUNCE_MS / 1000}s")
+            return
+        }
+        lastPhotoEmailAt = now
+
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("photo email skipped: camera permission is not granted")
+            return
+        }
+        val config = emailPhotoConfig() ?: return
+
+        bringCameraToForeground()
+        EventLog.add("photo email: capturing one photo")
+        PhotoCapture(this, cameraManager).capture { file ->
+            if (file == null) {
+                EventLog.add("photo email failed: the camera returned no photo")
+                return@capture
+            }
+            EventLog.add("photo email: photo captured (${file.length()} bytes) - sending")
+            sendPhotoEmail(config, file)
+        }
+    }
+
+    /** Reads and validates the email settings, returning null (and logging) when one is missing. */
+    private fun emailPhotoConfig(): SmtpMailer.Config? {
+        val recipient = prefs.emailPhotoRecipient.trim()
+        if (recipient.isEmpty()) {
+            EventLog.add("photo email skipped: no recipient address was set")
+            return null
+        }
+        val sender = prefs.emailPhotoSender.trim()
+        if (sender.isEmpty()) {
+            EventLog.add("photo email skipped: no sender address was set")
+            return null
+        }
+        val password = prefs.emailPhotoPassword
+        if (password.isEmpty()) {
+            EventLog.add("photo email skipped: no email app password was set")
+            return null
+        }
+        val host = prefs.emailPhotoSmtpHost.trim()
+        if (host.isEmpty()) {
+            EventLog.add("photo email skipped: no SMTP server was set")
+            return null
+        }
+        val body = "A photo was captured automatically by Security Services on the Volume Down " +
+            "trigger.\nDevice: ${Build.MODEL}\nTime: " +
+            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        return SmtpMailer.Config(
+            host = host,
+            port = prefs.emailPhotoSmtpPort,
+            startTls = prefs.emailPhotoStartTls,
+            username = sender,
+            password = password,
+            from = sender,
+            recipient = recipient,
+            subject = "Security Services photo",
+            body = body
+        )
+    }
+
+    /** Sends the captured photo on a background thread and removes the temporary file afterwards. */
+    private fun sendPhotoEmail(config: SmtpMailer.Config, file: File) {
+        Thread({
+            try {
+                SmtpMailer.send(config, file)
+                EventLog.add("photo email sent to ${config.recipient}")
+            } catch (e: Exception) {
+                EventLog.add("photo email failed: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                file.delete()
+            }
+        }, "photo-email").start()
+    }
+
+    /**
+     * Makes sure the running foreground service includes the camera type, which Android 11+ requires
+     * before an app in the background may open the camera. Mirrors how the microphone type is added
+     * in [startRecording]; a failure is only logged, the capture attempt itself still runs.
+     */
+    private fun bringCameraToForeground() {
+        if (cameraForeground) return
+        if (Build.VERSION.SDK_INT < 29) {
+            cameraForeground = true
+            return
+        }
+        try {
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            if (recordingForeground) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            startForeground(NOTIF_ID, buildNotification(), types)
+            cameraForeground = true
+            EventLog.add("camera type added to the running service")
+        } catch (e: Exception) {
+            EventLog.add("could not add the camera type: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
@@ -1097,26 +1219,46 @@ class AlarmService : Service() {
     private fun goForeground() {
         val n = buildNotification()
         if (Build.VERSION.SDK_INT >= 29) {
-            // Treat the microphone access as granted: optimistically include the microphone type
-            // (needed for voice recording while the screen is locked). If the phone refuses it
-            // because the runtime permission is not granted yet, fall back to media playback only -
-            // the alarm still works, and the app re-arms automatically once the dialog is allowed.
-            recordingForeground = try {
+            // The richest foreground type the phone can run with is media playback + microphone +
+            // camera. A type is only accepted when its runtime permission (microphone / camera) is
+            // granted, so the phone may refuse the whole call. Fall back step by step: the alarm
+            // must keep working even before the microphone or camera dialog has been allowed.
+            var started = try {
                 startForeground(
                     NOTIF_ID,
                     n,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
                 )
+                recordingForeground = true
+                cameraForeground = true
                 true
             } catch (e: Exception) {
                 false
             }
-            if (!recordingForeground) {
+            if (!started) {
+                // Microphone type only (needed for voice recording while the screen is locked).
+                started = try {
+                    startForeground(
+                        NOTIF_ID,
+                        n,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    )
+                    recordingForeground = true
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            if (!started) {
                 startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             }
         } else {
             startForeground(NOTIF_ID, n)
+            // Before Android 10 there are no foreground-service types to declare.
+            cameraForeground = true
         }
     }
 

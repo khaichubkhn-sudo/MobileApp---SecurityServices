@@ -52,6 +52,36 @@ class Prefs(context: Context) {
         get() = sp.getString("last_location_message", "") ?: ""
         set(v) { sp.edit().putString("last_location_message", v).apply() }
 
+    /** Recipient of the "capture one photo and email it" Volume Down action. */
+    var emailPhotoRecipient: String
+        get() = sp.getString("email_photo_recipient", "") ?: ""
+        set(v) { sp.edit().putString("email_photo_recipient", v.trim()).apply() }
+
+    /** Sender address, which is also the SMTP account the photo is sent from. */
+    var emailPhotoSender: String
+        get() = sp.getString("email_photo_sender", "") ?: ""
+        set(v) { sp.edit().putString("email_photo_sender", v.trim()).apply() }
+
+    /** SMTP password; email providers usually require an app-specific password here. */
+    var emailPhotoPassword: String
+        get() = sp.getString("email_photo_password", "") ?: ""
+        set(v) { sp.edit().putString("email_photo_password", v).apply() }
+
+    /** SMTP server host name, e.g. smtp.gmail.com. */
+    var emailPhotoSmtpHost: String
+        get() = sp.getString("email_photo_smtp_host", DEFAULT_EMAIL_SMTP_HOST) ?: DEFAULT_EMAIL_SMTP_HOST
+        set(v) { sp.edit().putString("email_photo_smtp_host", v.trim()).apply() }
+
+    /** SMTP server port: 465 for SSL/TLS, 587 for STARTTLS. */
+    var emailPhotoSmtpPort: Int
+        get() = sp.getInt("email_photo_smtp_port", DEFAULT_EMAIL_SMTP_PORT)
+        set(v) { sp.edit().putInt("email_photo_smtp_port", v.coerceIn(1, 65535)).apply() }
+
+    /** true = STARTTLS (usually port 587); false = implicit SSL/TLS (usually port 465). */
+    var emailPhotoStartTls: Boolean
+        get() = sp.getBoolean("email_photo_start_tls", false)
+        set(v) { sp.edit().putBoolean("email_photo_start_tls", v).apply() }
+
     /** Persisted Storage Access Framework tree URI for recordings, or null for the Music folder. */
     var recordingTreeUri: String?
         get() = sp.getString("recording_tree_uri", null)
@@ -72,6 +102,11 @@ class Prefs(context: Context) {
         const val ACTION_RECORD = "record"
         const val ACTION_LOCATION = "location"
         const val ACTION_CALL = "call"
+        const val ACTION_EMAIL_PHOTO = "email_photo"
+
+        /** Sensible defaults for the photo-email SMTP settings (Gmail with SSL/TLS). */
+        const val DEFAULT_EMAIL_SMTP_HOST = "smtp.gmail.com"
+        const val DEFAULT_EMAIL_SMTP_PORT = 465
     }
 
 }

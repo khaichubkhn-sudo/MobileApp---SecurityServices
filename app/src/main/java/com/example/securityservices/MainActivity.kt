@@ -84,6 +84,7 @@ class MainActivity : Activity() {
     private lateinit var a11yView: TextView
     private lateinit var dndView: TextView
     private lateinit var logView: TextView
+    private lateinit var emailConfigView: LinearLayout
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -188,15 +189,21 @@ class MainActivity : Activity() {
                 text = "Call the first phone number"
                 id = 4
             }
+            val photoMailOption = RadioButton(this@MainActivity).apply {
+                text = "Capture one photo and email it"
+                id = 5
+            }
             addView(alarmOption)
             addView(recordOption)
             addView(locationOption)
             addView(callOption)
+            addView(photoMailOption)
             check(
                 when (prefs.volumeDownAction) {
                     Prefs.ACTION_RECORD -> 2
                     Prefs.ACTION_LOCATION -> 3
                     Prefs.ACTION_CALL -> 4
+                    Prefs.ACTION_EMAIL_PHOTO -> 5
                     else -> 1
                 }
             )
@@ -205,6 +212,7 @@ class MainActivity : Activity() {
                     2 -> Prefs.ACTION_RECORD
                     3 -> Prefs.ACTION_LOCATION
                     4 -> Prefs.ACTION_CALL
+                    5 -> Prefs.ACTION_EMAIL_PHOTO
                     else -> Prefs.ACTION_ALARM
                 }
                 prefs.sendLocationOnVolumeDown = checkedId == 3
@@ -214,7 +222,9 @@ class MainActivity : Activity() {
                     notifyIfGpsDisabled()
                 }
                 if (checkedId == 4) requestCallPermission()
-                if (checkedId == 1) requestFlashlightPermission()
+                if (checkedId == 1) requestCameraPermission()
+                if (checkedId == 5) requestCameraPermission()
+                updateEmailConfigVisibility()
                 refresh()
                 rearm()
             }
@@ -305,6 +315,68 @@ class MainActivity : Activity() {
                 "notification while the microphone is active (hidden on the lock screen).",
             12f, false, GREY
         ))
+        // Photo-by-email settings. Shown only while the matching Volume Down action is selected.
+        emailConfigView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        emailConfigView.addView(tv("Photo email settings", 15f, true).also { gap(it) })
+
+        val emailTo = editField(
+            "Send photo to (email address)",
+            prefs.emailPhotoRecipient,
+            android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        ) { prefs.emailPhotoRecipient = it }
+        gap(emailTo)
+        emailConfigView.addView(emailTo)
+
+        val emailFrom = editField(
+            "Your email address (SMTP account / sender)",
+            prefs.emailPhotoSender,
+            android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        ) { prefs.emailPhotoSender = it }
+        gap(emailFrom)
+        emailConfigView.addView(emailFrom)
+
+        val emailPassword = editField(
+            "Email app password (not your normal password)",
+            prefs.emailPhotoPassword,
+            android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        ) { prefs.emailPhotoPassword = it }
+        gap(emailPassword)
+        emailConfigView.addView(emailPassword)
+
+        val emailHost = editField(
+            "SMTP server (e.g. smtp.gmail.com)",
+            prefs.emailPhotoSmtpHost,
+            android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        ) { prefs.emailPhotoSmtpHost = it }
+        gap(emailHost)
+        emailConfigView.addView(emailHost)
+
+        val emailPort = editField(
+            "SMTP port (465 for SSL/TLS, 587 for STARTTLS)",
+            prefs.emailPhotoSmtpPort.toString(),
+            android.text.InputType.TYPE_CLASS_NUMBER
+        ) { text -> text.trim().toIntOrNull()?.let { prefs.emailPhotoSmtpPort = it } }
+        gap(emailPort)
+        emailConfigView.addView(emailPort)
+
+        emailConfigView.addView(Switch(this).apply {
+            text = "Use STARTTLS (port 587). Off = SSL/TLS (port 465)"
+            isChecked = prefs.emailPhotoStartTls
+            setOnCheckedChangeListener { _, c -> prefs.emailPhotoStartTls = c }
+            gap(this)
+        })
+        emailConfigView.addView(tv(
+            "The photo is emailed straight from the phone through your own email account, so no server " +
+                "is needed. An app password is usually required: for Gmail, turn on 2-Step Verification, " +
+                "then create an App password (Google Account > Security > App passwords) and paste it above. " +
+                "Example: server smtp.gmail.com, port 465, STARTTLS off. Grant the camera permission when " +
+                "Android asks. Holding Volume Down for 2 seconds takes one photo and sends it; at most one " +
+                "photo every 2 seconds. The phone needs internet and the SMTP server must be reachable.",
+            12f, false, GREY
+        ))
+        gap(emailConfigView)
+        actionCard.addView(emailConfigView)
+        updateEmailConfigVisibility()
         root.addView(actionCard)
 
         // ---- alarm sound play
@@ -388,7 +460,10 @@ class MainActivity : Activity() {
             ui.postDelayed({ requestCallPermission() }, 700)
         }
         if (prefs.volumeDownAction == Prefs.ACTION_ALARM) {
-            ui.postDelayed({ requestFlashlightPermission() }, 700)
+            ui.postDelayed({ requestCameraPermission() }, 700)
+        }
+        if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
+            ui.postDelayed({ requestCameraPermission() }, 700)
         }
     }
 
@@ -539,7 +614,8 @@ class MainActivity : Activity() {
         if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), REQ_CALL_PHONE)
     }
 
-    private fun requestFlashlightPermission() {
+    /** Requests the camera permission (used by the alarm flashlight and the photo-email action). */
+    private fun requestCameraPermission() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
         }
@@ -605,6 +681,23 @@ class MainActivity : Activity() {
                 EventLog.add("location and SMS permissions granted")
             } else {
                 EventLog.add("location/SMS permission denied - location messages are unavailable")
+            }
+            refresh()
+            return
+        }
+        if (requestCode == REQ_CAMERA) {
+            val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            EventLog.add(
+                if (granted) {
+                    "camera permission granted"
+                } else {
+                    "camera permission denied - flashlight and photo email are unavailable"
+                }
+            )
+            // The armed service needs the camera foreground type to capture from a locked screen, so
+            // re-arm once the permission is granted and the photo action is selected.
+            if (granted && prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
+                rearm()
             }
             refresh()
             return
@@ -720,6 +813,35 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ view helpers
+
+    /** A single-line input that writes every keystroke straight to the settings. */
+    private fun editField(
+        hintText: String,
+        initialValue: String,
+        fieldInputType: Int,
+        onChange: (String) -> Unit
+    ) = EditText(this).apply {
+        hint = hintText
+        inputType = fieldInputType
+        setText(initialValue)
+        addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                onChange(s?.toString() ?: "")
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+    }
+
+    /** Shows the photo-email settings only while the matching Volume Down action is selected. */
+    private fun updateEmailConfigVisibility() {
+        if (!::emailConfigView.isInitialized) return
+        emailConfigView.visibility = if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
+            android.view.View.VISIBLE
+        } else {
+            android.view.View.GONE
+        }
+    }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
 

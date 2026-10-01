@@ -1,9 +1,9 @@
 # Security Services (Android)
 
 A loud, fixed-volume alarm that arms itself whenever the app is open. Plays an audio file you choose
-(wav, mp3, m4a, flac, ogg, ...) from the PLAY button. While armed, holding Volume Down for 2 seconds either
-plays the alarm or starts microphone recording, according to the selected action (locked, unlocked, or with
-the screen off).
+(wav, mp3, m4a, flac, ogg, ...) from the PLAY button. While armed, holding Volume Down for 2 seconds runs
+the action you selected - play the alarm, start microphone recording, send the GPS location by SMS, call the
+first number, or capture one photo and email it - whether the phone is locked, unlocked or the screen is off.
 
 ## Part A - Get the APK onto your phone
 
@@ -63,6 +63,14 @@ the screen off).
    and tap **STOP RECORDING** in the app to finish the current M4A file (the notification shows "RECORDING VOICE"
    while it runs). Recording also stops when the file reaches 300 MB or the app is closed.
 
+9. To use **Photo by email**, select **Capture one photo and email it** in the Volume Down action section.
+   The photo-email settings then appear right below: enter the recipient address, your own email address (the
+   account the photo is sent from), an email app password, the SMTP server and port, and choose SSL/TLS or
+   STARTTLS. Allow the camera permission when Android asks. Example (Gmail): turn on 2-Step Verification, create
+   an **App password** (Google Account > Security > App passwords), paste it as the password, and use server
+   `smtp.gmail.com` with port `465` and STARTTLS off. No server of ours is involved - the email is sent straight
+   from the phone through your own account, so the phone needs internet and the SMTP server must be reachable.
+
 ## Part C - Daily use
 * **The app is always armed while it is open** - there is no arm/disarm button. A quiet "Security Services ARMED"
   notification appears (hidden on the lock screen). It arms itself when you open it and **re-arms after every
@@ -89,6 +97,11 @@ the screen off).
    the two-second Volume Down hold, the app calls the first number directly from its armed foreground service, only
    when no call is already in progress, including while the screen is locked. Grant the phone-call permission when
    Android asks.
+* **Photo by email**: select **Capture one photo and email it**; the settings for it appear in the same section.
+   After the two-second Volume Down hold the app takes one photo with the main (back) camera and emails it as a
+   JPEG attachment. At most one photo is sent every 2 seconds (a repeat within that window is ignored). Grant
+   camera permission when Android asks. The phone needs internet and the SMTP server must be reachable; the
+   sent/failed result and the reason are shown in Troubleshooting.
 * **Alarm flashlight**: when **Play the alarm sound** is selected, the phone's camera flashlight blinks while the
    alarm sounds and switches off when the alarm stops. Grant camera permission when Android asks.
 
@@ -111,5 +124,8 @@ the screen off).
 * Loud sounds can damage hearing at close range.
 
 ## Privacy
-No internet permission, no analytics. The accessibility service is inert unless the alarm is armed, only inspects the
-label of tapped buttons, and never records digits other than "1". Troubleshooting entries live in memory only.
+No analytics. The app asks for internet access only for the optional **Photo by email** action, which sends the
+captured photo straight from the phone through your own email (SMTP) account - nothing is routed through any
+third-party server, and the email password is kept only in the app's private settings on the device. The
+accessibility service is inert unless the alarm is armed, only inspects the label of tapped buttons, and never
+records digits other than "1". Troubleshooting entries live in memory only.

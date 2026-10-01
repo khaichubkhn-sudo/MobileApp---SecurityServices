@@ -16,6 +16,8 @@
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Deliberately NO RECEIVE_BOOT_COMPLETED: the alarm never starts by itself. -->
 
     <application
@@ -37,7 +39,7 @@
         <service
             android:name=".AlarmService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|microphone"
+            android:foregroundServiceType="mediaPlayback|microphone|camera"
             android:stopWithTask="true" />
 
         <service

@@ -122,8 +122,8 @@ object SmtpMailer {
     }
 
     private fun upgradeToTls(plain: Socket, config: Config): SSLSocket {
-        val ssl = SSLSocketFactory.getDefault()
-            .createSocket(plain, config.host, config.port, true) as SSLSocket
+        val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+        val ssl = factory.createSocket(plain, config.host, config.port, true) as SSLSocket
         ssl.soTimeout = READ_TIMEOUT_MS
         ssl.startHandshake()
         return ssl

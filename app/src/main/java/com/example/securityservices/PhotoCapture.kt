@@ -181,14 +181,15 @@ class PhotoCapture(
         IntArray(0)
     }
 
-    /** Prefers a high-resolution (up to 25 MP) JPEG for better quality, capped at 15 MB on disk. */
+    /** Prefers a high-resolution (up to 50 MP) JPEG for better quality, capped at 15 MB on disk. */
     private fun chooseSize(cameraId: String): Size {
         return try {
             val map = cameraManager.getCameraCharacteristics(cameraId)
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty()
             if (sizes.isEmpty()) return Size(4032, 3024)
-            sizes.filter { it.width.toLong() * it.height <= 25_000_000L }
+            // Largest size within budget; camera-reported sizes are always valid for ImageReader.
+            sizes.filter { it.width.toLong() * it.height <= MAX_PHOTO_PIXELS }
                 .maxByOrNull { it.width.toLong() * it.height }
                 ?: sizes.minByOrNull { it.width.toLong() * it.height }!!
         } catch (e: Exception) {
@@ -247,6 +248,8 @@ class PhotoCapture(
 
     private companion object {
         const val CAPTURE_TIMEOUT_MS = 8_000L
+        /** Upper bound on capture resolution (50 MP); file size is separately capped below. */
+        const val MAX_PHOTO_PIXELS = 50_000_000L
         /** Largest photo kept on disk (15 MB); base64 email overhead adds ~37%. */
         const val MAX_PHOTO_BYTES = 15L * 1024L * 1024L
     }

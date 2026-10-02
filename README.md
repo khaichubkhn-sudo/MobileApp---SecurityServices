@@ -1,7 +1,7 @@
 # Security Services (Android)
 
 A loud, fixed-volume alarm that arms itself whenever the app is open. Plays an audio file you choose
-(wav, mp3, m4a, flac, ogg, ...) from the PLAY button. While armed, holding Volume Down for 2 seconds runs
+(wav, mp3, m4a, flac, ogg, ...) from the PLAY button. While armed, holding Volume Down for 1 second runs
 the action you selected - play the alarm, start microphone recording, send the GPS location by SMS, call the
 first number, or capture one photo and email it - whether the phone is locked, unlocked or the screen is off.
 
@@ -59,7 +59,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
    phone refuses to record while the screen is locked; granting the permission while armed re-arms the service
    automatically). **START RECORDING now (test)** lets you verify the mic pipeline from the app.
    Choose a folder if needed; otherwise files are saved under **Recordings/Security Services** (with a fallback
-   folder if the phone refuses that location). Once armed, **hold Volume Down for 2 seconds** to start recording,
+   folder if the phone refuses that location). Once armed, **hold Volume Down for 1 second** to start recording,
    and tap **STOP RECORDING** in the app to finish the current AAC file (`.aac`; the notification shows "RECORDING VOICE"
    while it runs). Recording also stops when the file reaches 300 MB or the app is closed. When a recording
    finishes it is also emailed to the **Send photo / recording to** address (see item 9). The recording is AAC,
@@ -93,7 +93,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
   Closing the app (swipe away in Recents / "Close all") stops any running action, so the volumes are handed back
   then too. The pre-action levels are also stored on the device, so they are still restored correctly even if Android
   kills the app while an action was running.
-* **Sound or record**: the selected Volume Down action starts after a 2-second hold (works locked, unlocked, or
+* **Sound or record**: the selected Volume Down action starts after a 1-second hold (works locked, unlocked, or
    with the screen off; Volume Up is ignored). With recording selected, the hold starts a voice recording and the
    ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.
 * **Stop it**: tap **STOP RECORDING** to finish and save the voice file, or **STOP** to silence a sounding alarm.
@@ -103,11 +103,11 @@ first number, or capture one photo and email it - whether the phone is locked, u
    to each distinct number, with a maximum of 10 SMS messages after each app start. The link and sending result are shown temporarily in Troubleshooting. Android does not
    allow an app to silently switch on the system Location setting, so Location must already be enabled on the phone.
 * **Phone call**: select **Call the first phone number** and enter one or more semicolon-separated numbers. After
-   the two-second Volume Down hold, the app calls the first number directly from its armed foreground service, only
+   the one-second Volume Down hold, the app calls the first number directly from its armed foreground service, only
    when no call is already in progress, including while the screen is locked. Grant the phone-call permission when
    Android asks.
 * **Photo / recording by email**: select **Capture one photo and email it** for photos, or **Start microphone
-   voice recording** for audio; the email settings are always shown in the same section. After the two-second
+   voice recording** for audio; the email settings are always shown in the same section. After the one-second
    Volume Down hold the app takes one photo with the main (back) camera and emails it as a JPEG attachment (at
    most one photo every 2 seconds). When a recording finishes it is emailed to the same address as numbered parts
    of at most 16 MB each. Grant camera permission when Android asks. The app waits up to 2 minutes for internet:
@@ -117,7 +117,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
    alarm sounds and switches off when the alarm stops. Grant camera permission when Android asks.
 
 ## Part D - Test the Volume Down trigger
-1. Open the app (it arms itself), then press and hold **Volume Down** for 2 seconds (no need to lock the phone first -
+1. Open the app (it arms itself), then press and hold **Volume Down** for 1 second (no need to lock the phone first -
    it works whether the phone is locked, unlocked, or the screen is off).
 3. The alarm should sound within a second. If not, look at **Troubleshooting** at the bottom of the app:
    it lists what the app noticed, including the volume-press detection and the trigger result.
@@ -129,7 +129,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
   2. A back-up detector that watches the system volume: holding Volume Down lowers it repeatedly, which the app
      sees even without accessibility. It needs the volume to be above its minimum for the keys to change anything,
      so if you keep the phone's media volume at zero, rely on the accessibility service above. A single short press
-     is still not enough (it must be a 2-second hold).
+     is still not enough (it must be a 1-second hold).
 * An alarm cannot beat a powered-off phone, a killed process, or hardware volume limiters some Bluetooth devices apply
   (Force phone speaker helps). Android "Total silence" DND blocks alarms unless DND access is granted (Part B-6).
 * Loud sounds can damage hearing at close range.

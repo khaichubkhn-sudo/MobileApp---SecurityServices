@@ -205,7 +205,7 @@ class MainActivity : Activity() {
         // ---- Volume Down action
         val actionCard = card()
         actionCard.addView(tv("2. Volume Down action", 16f, true))
-        actionCard.addView(tv("Choose what starts after the Volume Down button is held for 2 seconds.", 14f))
+        actionCard.addView(tv("Choose what starts after the Volume Down button is held for 1 second.", 14f))
         val actionGroup = RadioGroup(this).apply {
             orientation = RadioGroup.VERTICAL
             val alarmOption = RadioButton(this@MainActivity).apply {
@@ -407,7 +407,7 @@ class MainActivity : Activity() {
                 "then create an App password (Google Account > Security > App passwords) and paste it above. " +
                 "Example: server smtp.gmail.com, port 465, STARTTLS off. The same account is used for both " +
                 "the photo and for voice recordings. Grant the camera permission when Android asks. " +
-                "Holding Volume Down for 2 seconds takes one photo and sends it (at most one every 2 seconds); " +
+                "Holding Volume Down for 1 second takes one photo and sends it (at most one every 2 seconds); " +
                 "when a voice recording finishes, it is emailed too. The recording is AAC (.aac), split into " +
                 "numbered parts of at most 16 MB each so every email stays under the 25 MB limit email providers " +
                 "enforce; concatenate the received parts in number order to replay the whole recording, and the " +
@@ -445,8 +445,8 @@ class MainActivity : Activity() {
         val lockCard = card()
         lockCard.addView(tv("4. Volume Down trigger", 16f, true))
         lockCard.addView(tv(
-            "While ARMED, press and hold the Volume Down button for 2 seconds. " +
-                "The alarm sounds when it has been held for 2 seconds - locked, unlocked or with the screen off.",
+            "While ARMED, press and hold the Volume Down button for 1 second. " +
+                "The alarm sounds when it has been held for 1 second - locked, unlocked or with the screen off.",
             14f
         ))
         a11yView = tv("", 14f, true)

@@ -66,7 +66,7 @@ class AlarmAccessibilityService : AccessibilityService() {
             KeyEvent.ACTION_DOWN -> {
                 if (event.repeatCount == 0) {
                     // First press of this hold. If the alarm is already sounding there is nothing
-                    // to do; otherwise start the 2-second hold timer.
+                    // to do; otherwise start the 1-second hold timer.
                     if (AlarmService.isPlaying) {
                         cancelHold()
                         holdFired = false
@@ -107,6 +107,6 @@ class AlarmAccessibilityService : AccessibilityService() {
     }
 
     private companion object {
-        const val HOLD_MS = 2_000L
+        const val HOLD_MS = 1_000L
     }
 }

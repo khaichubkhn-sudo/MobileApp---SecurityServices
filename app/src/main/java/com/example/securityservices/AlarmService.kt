@@ -71,13 +71,14 @@ class AlarmService : Service() {
         private const val PERMISSION_FOREGROUND_MICROPHONE = "android.permission.FOREGROUND_SERVICE_MICROPHONE"
 
         /** How long Volume Down must be held (fallback volume-based detection). */
-        private const val HOLD_MS = 2_000L
+        private const val HOLD_MS = 1_000L
 
         /**
          * Longest pause between volume decreases that still counts as one continuous hold.
          * Must be comfortably larger than the OS key-repeat delay (~500 ms) but smaller than HOLD_MS.
+         * At 1s HOLD_MS the margin is tight, so keep gap small to avoid false single-press triggers.
          */
-        private const val HOLD_GAP_MS = 800L
+        private const val HOLD_GAP_MS = 600L
         private const val LOCATION_TIMEOUT_MS = 30_000L
         private const val LOCATION_TRIGGER_DEBOUNCE_MS = 3_000L
         private const val CALL_TRIGGER_DEBOUNCE_MS = 3_000L
@@ -827,7 +828,7 @@ class AlarmService : Service() {
     }
 
     private fun triggerVolumeHold() {
-        EventLog.add("TRIGGER: Volume Down held 2s (volume detection)")
+        EventLog.add("TRIGGER: Volume Down held 1s (volume detection)")
         triggerVolumeAction()
         resetVolumeHold()
     }

@@ -458,11 +458,16 @@ class MainActivity : Activity() {
         ui.postDelayed({ requestRecordingPermissions() }, 400)
         // Always armed. Arm only after the microphone dialog settles (see onRequestPermissionsResult)
         // so the very first arm already includes the microphone type - without it the phone refuses
-        // to record from the locked screen. When nothing is missing, arm straight away.
-        if (missingRecordingPermissions().isEmpty()) {
-            ui.postDelayed({ rearm() }, 600)
-        } else {
-            armAfterPermission = true
+        // to record from the locked screen. When nothing is missing, arm straight away - but only
+        // when the service is not already running. Re-opening the app while it is armed (in
+        // particular while a voice recording is running) must NOT restart the service: restarting
+        // would stop the recorder mid-capture and email an unfinished file.
+        if (AlarmService.instance == null && !AlarmService.isArmed) {
+            if (missingRecordingPermissions().isEmpty()) {
+                ui.postDelayed({ rearm() }, 600)
+            } else {
+                armAfterPermission = true
+            }
         }
         // If the Volume Down trigger service is off, open its settings page when the app starts.
         ui.postDelayed({ autoOpenAccessibilitySettings() }, 900)
@@ -490,11 +495,35 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ actions
 
     private fun rearm() {
+        // Never interrupt an active voice recording: restarting the armed service would
+        // stop the recorder (and email an unfinished file). While recording, the service
+        // is already armed with the correct foreground type, so just leave it alone; the
+        // changed setting takes effect on the next arm. isRecording is a snapshot that can
+        // lag a RECORD trigger racing this call (service is up, recorder not yet assigned),
+        // so also bail out when a recording was very recently started - but only when the
+        // service is actually alive. If the service died while the app was in the background
+        // there is no recording to protect and the app must re-arm here.
+        val alive = AlarmService.instance != null
+        if (alive && (AlarmService.isRecording || AlarmService.recordStartedRecently())) {
+            EventLog.add("re-arm skipped: recording in progress")
+            refresh()
+            return
+        }
         AlarmService.instance?.disarm()
         ui.postDelayed({ doArm() }, 150)
     }
 
     private fun doArm() {
+        // A pending arm from before a recording started must not restart the service
+        // mid-capture (see rearm()) - unless the service is gone, in which case there is
+        // nothing to protect and arming must proceed.
+        if (AlarmService.instance != null &&
+            (AlarmService.isRecording || AlarmService.recordStartedRecently())
+        ) {
+            EventLog.add("re-arm skipped: recording in progress")
+            refresh()
+            return
+        }
         try {
             startForegroundService(Intent(this, AlarmService::class.java).setAction(AlarmService.ACTION_ARM))
         } catch (e: Exception) {

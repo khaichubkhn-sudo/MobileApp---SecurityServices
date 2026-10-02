@@ -139,6 +139,23 @@ class AlarmService : Service() {
         /** True when the running foreground service includes the microphone type (only true when the
          *  runtime permission was granted before the service started). Recording needs this type. */
         val hasMicrophoneForegroundType: Boolean get() = instance?.recordingForeground ?: false
+
+        /** Elapsed-realtime timestamp of the last recording start (0 = none yet this process). */
+        @Volatile
+        private var lastRecordStartAt = 0L
+
+        /**
+         * True when a recording was (re)started very recently. Covers the race where a Volume
+         * Down RECORD trigger fired but the recorder field is not assigned yet: without this,
+         * a re-arm queued before the trigger could still restart the service mid-capture.
+         */
+        fun recordStartedRecently(): Boolean =
+            android.os.SystemClock.elapsedRealtime() - lastRecordStartAt < 10_000L
+
+        /** Marks the moment a recording capture begins (called before MediaRecorder.start()). */
+        private fun markRecordStarted() {
+            lastRecordStartAt = android.os.SystemClock.elapsedRealtime()
+        }
     }
 
     private var player: MediaPlayer? = null
@@ -286,15 +303,26 @@ class AlarmService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        try {
-            // goForeground() decides whether the phone lets us run with the microphone type: it
-            // always asks for it optimistically and falls back to media playback only if the runtime
-            // permission is not granted yet (the type can never be added later). The app re-requests
-            // the permission and re-arms automatically once the user allows the dialog in the GUI.
-            goForeground()
-        } catch (e: Exception) {
-            stopSelf()
-            return START_NOT_STICKY
+        // Never touch the foreground state while a voice recording is running: re-issuing
+        // startForeground() (possibly with a different type set) can throw and the catch
+        // below would stopSelf() - killing the recorder mid-capture just because the app
+        // was re-opened. An ARM intent carries no action, so there is nothing else to do.
+        if (recorder == null) {
+            try {
+                // goForeground() decides whether the phone lets us run with the microphone type: it
+                // always asks for it optimistically and falls back to media playback only if the runtime
+                // permission is not granted yet (the type can never be added later). The app re-requests
+                // the permission and re-arms automatically once the user allows the dialog in the GUI.
+                // (Recording is never interrupted here: an ARM intent carries no action, so the
+                // command below leaves the recorder untouched; re-arming while recording is blocked
+                // in MainActivity.rearm()/doArm() instead.)
+                goForeground()
+            } catch (e: Exception) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        } else {
+            refreshNotification()
         }
         when (intent?.action) {
             ACTION_PLAY -> startAlarm()
@@ -308,10 +336,14 @@ class AlarmService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Closing the app (swipe away in Recents / "Close all") stops any running action, and stopping
         // the last action puts the phone's volumes back to the levels they had before it started (see
-        // endActionVolumes()). Doing it through disarm() also covers vendors that deliver this callback
-        // but not a clean onDestroy().
+        // endActionVolumes()). (An in-app re-arm deliberately keeps a running recording alive via
+        // disarm(), which is a no-op for the service itself while recording - only a real task
+        // removal shuts everything down here.)
         EventLog.add("app closed")
-        disarm()
+        stopSound(updateNotification = false)
+        stopRecording(updateNotification = false)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 
@@ -389,6 +421,10 @@ class AlarmService : Service() {
 
     /** Starts microphone capture directly to a file; MediaRecorder performs the streaming writes. */
     fun startRecording() {
+        // Claim the "recording" state up front so a re-arm racing this call still sees it and
+        // backs off instead of restarting the service mid-capture (see recordStartedRecently()).
+        // If a recording is already running this is a no-op (never restarts the capture).
+        markRecordStarted()
         if (recorder != null) return
         // The app treats the microphone access as granted: the permission is requested automatically
         // each time the app opens, so these are informational only and never block recording. Any
@@ -583,7 +619,16 @@ class AlarmService : Service() {
     }
 
     fun disarm() {
+        // Disarming must never cut a voice recording short: it is only the alarm sound that
+        // belongs to the armed service lifecycle. (The recorder is stopped explicitly by the
+        // user, the 300 MB limit, or a process shutdown.) If a recording is running, keep
+        // the service (and its foreground notification) alive - otherwise a re-arm triggered
+        // by simply re-opening the app would stop the recorder mid-capture via onDestroy().
         stopSound(updateNotification = false)
+        if (recorder != null) {
+            refreshNotification()
+            return
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

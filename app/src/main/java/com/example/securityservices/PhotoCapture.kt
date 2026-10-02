@@ -3,6 +3,8 @@ package com.example.securityservices
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -13,6 +15,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 
@@ -90,7 +93,7 @@ class PhotoCapture(
                     val buffer = image.planes[0].buffer
                     val bytes = ByteArray(buffer.remaining())
                     buffer.get(bytes)
-                    FileOutputStream(outputFile).use { it.write(bytes) }
+                    FileOutputStream(outputFile).use { it.write(enforceMaxBytes(bytes)) }
                     complete(outputFile)
                 } catch (e: Exception) {
                     complete(null)
@@ -124,7 +127,7 @@ class PhotoCapture(
                                                 CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
                                             )
                                         }
-                                        builder.set(CaptureRequest.JPEG_QUALITY, 90.toByte())
+                                        builder.set(CaptureRequest.JPEG_QUALITY, 95.toByte())
                                         configured.capture(builder.build(), null, handler)
                                     } catch (e: Exception) {
                                         complete(null)
@@ -178,22 +181,73 @@ class PhotoCapture(
         IntArray(0)
     }
 
-    /** Prefers a moderate (about 2 MP) JPEG so the email attachment stays small. */
+    /** Prefers a high-resolution (up to 25 MP) JPEG for better quality, capped at 15 MB on disk. */
     private fun chooseSize(cameraId: String): Size {
         return try {
             val map = cameraManager.getCameraCharacteristics(cameraId)
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty()
-            if (sizes.isEmpty()) return Size(1280, 720)
-            sizes.filter { it.width.toLong() * it.height <= 2_000_000L }
+            if (sizes.isEmpty()) return Size(4032, 3024)
+            sizes.filter { it.width.toLong() * it.height <= 25_000_000L }
                 .maxByOrNull { it.width.toLong() * it.height }
                 ?: sizes.minByOrNull { it.width.toLong() * it.height }!!
         } catch (e: Exception) {
-            Size(1280, 720)
+            Size(4032, 3024)
+        }
+    }
+
+    /**
+     * Returns [bytes] unchanged when already within [MAX_PHOTO_BYTES]; otherwise recompresses
+     * (lower quality, then smaller dimensions) until the photo fits. Centralizes the 15 MB cap
+     * so the email attachment never exceeds ~20 MB after base64 wrapping (~25 MB provider limit).
+     */
+    private fun enforceMaxBytes(bytes: ByteArray): ByteArray {
+        if (bytes.size.toLong() <= MAX_PHOTO_BYTES) return bytes
+        var decoded: Bitmap? = null
+        try {
+            decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
+            var scale = 1.0
+            var quality = 92
+            while (true) {
+                val out = ByteArrayOutputStream()
+                if (scale >= 1.0) {
+                    decoded.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                } else {
+                    val w = (decoded.width * scale).toInt().coerceAtLeast(1)
+                    val h = (decoded.height * scale).toInt().coerceAtLeast(1)
+                    val small = Bitmap.createScaledBitmap(decoded, w, h, true)
+                    try {
+                        small.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                    } finally {
+                        small.recycle()
+                    }
+                }
+                val compressed = out.toByteArray()
+                if (compressed.size.toLong() <= MAX_PHOTO_BYTES) return compressed
+                if (quality > 70) {
+                    quality -= 8
+                } else if (scale > 0.4) {
+                    scale *= 0.8
+                    quality = 85
+                } else {
+                    return compressed
+                }
+            }
+        } catch (e: OutOfMemoryError) {
+            return bytes
+        } catch (e: Exception) {
+            return bytes
+        } finally {
+            try {
+                decoded?.recycle()
+            } catch (e: Exception) {
+            }
         }
     }
 
     private companion object {
         const val CAPTURE_TIMEOUT_MS = 8_000L
+        /** Largest photo kept on disk (15 MB); base64 email overhead adds ~37%. */
+        const val MAX_PHOTO_BYTES = 15L * 1024L * 1024L
     }
 }

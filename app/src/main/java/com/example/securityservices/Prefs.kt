@@ -82,6 +82,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("email_photo_start_tls", false)
         set(v) { sp.edit().putBoolean("email_photo_start_tls", v).apply() }
 
+    /** Result of the last photo / recording email; shown as a notification on the app's main screen. */
+    var lastEmailNotice: String
+        get() = sp.getString("last_email_notice", "") ?: ""
+        set(v) { sp.edit().putString("last_email_notice", v).apply() }
+
+    /** true when [lastEmailNotice] describes a success, false when it describes a failure. */
+    var lastEmailNoticeOk: Boolean
+        get() = sp.getBoolean("last_email_notice_ok", false)
+        set(v) { sp.edit().putBoolean("last_email_notice_ok", v).apply() }
+
     /** Persisted Storage Access Framework tree URI for recordings, or null for the Music folder. */
     var recordingTreeUri: String?
         get() = sp.getString("recording_tree_uri", null)

@@ -20,6 +20,8 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.RingtoneManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +38,9 @@ import android.provider.MediaStore
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,6 +86,31 @@ class AlarmService : Service() {
 
         /** Minimum wait between two photo emails, so a repeated hold cannot spam the inbox. */
         private const val EMAIL_PHOTO_DEBOUNCE_MS = 2_000L
+
+        /**
+         * Largest raw recording part sent in a single email (16 MB). Base64 encoding plus the MIME
+         * line wrapping adds about 37 %, so 16 MB of audio becomes roughly 22 MB of email data -
+         * comfortably under the 25 MB limit most email providers enforce. The recording is stored as
+         * AAC ADTS, which is streamable, so these parts can be rejoined (and played) even if a later
+         * part is missing or failed to send.
+         */
+        private const val MAX_EMAIL_ATTACHMENT_BYTES = 16L * 1024L * 1024L
+
+        /**
+         * How far the splitter looks ahead for an AAC ADTS frame boundary when finishing a part. Ending
+         * every part on a frame boundary makes each part a valid, playable .aac file on its own; the
+         * look-ahead never drops bytes (they are carried into the next part).
+         */
+        private const val ADTS_ALIGN_WINDOW_BYTES = 4 * 1024
+
+        /**
+         * How long the app waits for an internet connection before giving up on a send. If the phone
+         * only gets internet after this window, the photo / recording is NOT sent afterwards.
+         */
+        private const val INTERNET_WAIT_MS = 120_000L
+
+        /** How often the internet connection is re-checked while waiting (must be well under the limit). */
+        private const val INTERNET_POLL_MS = 3_000L
 
         @Volatile
         private var smsMessagesSentSinceAppStart = 0
@@ -392,7 +422,10 @@ class AlarmService : Service() {
             val output = createRecordingOutput()
             activeRecorder = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
             activeRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            activeRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            // AAC in the ADTS container (.aac): unlike MPEG-4/M4A it keeps no index/"moov" atom at
+            // the end of the file, so any byte prefix of the recording is itself playable. That is
+            // what lets the email parts be rejoined and replayed even when a later part is missing.
+            activeRecorder.setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS)
             activeRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             activeRecorder.setAudioEncodingBitRate(128_000)
             activeRecorder.setAudioSamplingRate(44_100)
@@ -443,6 +476,7 @@ class AlarmService : Service() {
             it.release()
         }
         val uri = recordingUri
+        val file = recordingFile
         if (uri != null && Build.VERSION.SDK_INT >= 29) {
             val values = android.content.ContentValues().apply {
                 put(MediaStore.Audio.Media.IS_PENDING, 0)
@@ -457,7 +491,15 @@ class AlarmService : Service() {
         recordingFd = null
         recordingFile = null
         recordingUri = null
-        if (wasRecording) EventLog.add("VOICE RECORDING STOPPED")
+        if (wasRecording) {
+            EventLog.add("VOICE RECORDING STOPPED")
+            // Email the finished recording to the same address, on the same SMTP account as the photo.
+            // The send happens on its own thread so it never blocks the service.
+            if (uri != null || file != null) {
+                val baseName = recordingBaseName(uri, file)
+                Thread({ emailRecording(uri, file, baseName) }, "recording-email").start()
+            }
+        }
         // The recording is over: give the volumes back to the user (unless the alarm still sounds).
         endActionVolumes()
         if (updateNotification && instance != null) {
@@ -466,12 +508,12 @@ class AlarmService : Service() {
     }
 
     private fun createRecordingOutput(): java.io.FileDescriptor {
-        val name = "voice_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.m4a"
+        val name = "voice_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.aac"
         // 1) The player-chosen folder (Storage Access Framework tree), if one was picked.
         val treeUri = prefs.recordingTreeUri?.let { Uri.parse(it) }
         if (treeUri != null) {
             try {
-                val uri = DocumentsContract.createDocument(contentResolver, treeUri, "audio/mp4", name)
+                val uri = DocumentsContract.createDocument(contentResolver, treeUri, "audio/aac", name)
                     ?: throw IllegalStateException("createDocument returned null")
                 val fd = contentResolver.openFileDescriptor(uri, "w")
                     ?: throw IllegalStateException("openFileDescriptor returned null")
@@ -491,7 +533,7 @@ class AlarmService : Service() {
             try {
                 val values = android.content.ContentValues().apply {
                     put(MediaStore.Audio.Media.DISPLAY_NAME, name)
-                    put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
+                    put(MediaStore.Audio.Media.MIME_TYPE, "audio/aac")
                     put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_RECORDINGS + "/Security Services")
                     put(MediaStore.Audio.Media.IS_PENDING, 0)
                 }
@@ -781,56 +823,98 @@ class AlarmService : Service() {
             EventLog.add("photo email skipped: camera permission is not granted")
             return
         }
-        val config = emailPhotoConfig() ?: return
+        val config = photoEmailConfig() ?: return
 
-        bringCameraToForeground()
-        EventLog.add("photo email: capturing one photo")
-        PhotoCapture(this, cameraManager).capture { file ->
-            if (file == null) {
-                EventLog.add("photo email failed: the camera returned no photo")
-                return@capture
+        // The camera and the send only run when the phone has internet inside the 2-minute window.
+        // If internet only shows up after that window, the photo is never taken and never sent.
+        Thread({
+            if (!awaitInternetConnection()) {
+                val message = "Photo NOT sent: no internet within 2 minutes"
+                EventLog.add("photo email skipped: no internet connection within 2 minutes")
+                setSendNotice(message, false)
+                return@Thread
             }
-            EventLog.add("photo email: photo captured (${file.length()} bytes) - sending")
-            sendPhotoEmail(config, file)
-        }
+            handler.post {
+                bringCameraToForeground()
+                EventLog.add("photo email: capturing one photo")
+                PhotoCapture(this, cameraManager).capture { file ->
+                    if (file == null) {
+                        EventLog.add("photo email failed: the camera returned no photo")
+                        setSendNotice("Photo email failed: the camera returned no photo", false)
+                        return@capture
+                    }
+                    EventLog.add("photo email: photo captured (${file.length()} bytes) - sending")
+                    sendPhotoEmail(config, file)
+                }
+            }
+        }, "photo-internet-check").start()
     }
 
-    /** Reads and validates the email settings, returning null (and logging) when one is missing. */
-    private fun emailPhotoConfig(): SmtpMailer.Config? {
+    /** The SMTP account shared by the photo email and the recording email. */
+    private data class EmailDetails(
+        val host: String,
+        val port: Int,
+        val startTls: Boolean,
+        val username: String,
+        val password: String,
+        val from: String,
+        val recipient: String
+    )
+
+    /** Reads and validates the shared email settings, returning null (and logging) when one is missing. */
+    private fun emailDetailsOrNull(what: String): EmailDetails? {
         val recipient = prefs.emailPhotoRecipient.trim()
         if (recipient.isEmpty()) {
-            EventLog.add("photo email skipped: no recipient address was set")
+            EventLog.add("$what skipped: no recipient address was set")
             return null
         }
         val sender = prefs.emailPhotoSender.trim()
         if (sender.isEmpty()) {
-            EventLog.add("photo email skipped: no sender address was set")
+            EventLog.add("$what skipped: no sender address was set")
             return null
         }
         val password = prefs.emailPhotoPassword
         if (password.isEmpty()) {
-            EventLog.add("photo email skipped: no email app password was set")
+            EventLog.add("$what skipped: no email app password was set")
             return null
         }
         val host = prefs.emailPhotoSmtpHost.trim()
         if (host.isEmpty()) {
-            EventLog.add("photo email skipped: no SMTP server was set")
+            EventLog.add("$what skipped: no SMTP server was set")
             return null
         }
-        val body = "A photo was captured automatically by Security Services on the Volume Down " +
-            "trigger.\nDevice: ${Build.MODEL}\nTime: " +
-            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        return SmtpMailer.Config(
+        return EmailDetails(
             host = host,
             port = prefs.emailPhotoSmtpPort,
             startTls = prefs.emailPhotoStartTls,
             username = sender,
             password = password,
             from = sender,
-            recipient = recipient,
-            subject = "Security Services photo",
-            body = body
+            recipient = recipient
         )
+    }
+
+    /** Builds one SMTP message from [details] with the given subject and body. */
+    private fun mailConfig(details: EmailDetails, subject: String, body: String) = SmtpMailer.Config(
+        host = details.host,
+        port = details.port,
+        startTls = details.startTls,
+        username = details.username,
+        password = details.password,
+        from = details.from,
+        recipient = details.recipient,
+        subject = subject,
+        body = body
+    )
+
+    private fun timestamp(): String = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+
+    /** The message settings for the "capture one photo and email it" action. */
+    private fun photoEmailConfig(): SmtpMailer.Config? {
+        val details = emailDetailsOrNull("photo email") ?: return null
+        val body = "A photo was captured automatically by Security Services on the Volume Down " +
+            "trigger.\nDevice: ${Build.MODEL}\nTime: ${timestamp()}"
+        return mailConfig(details, "Security Services photo", body)
     }
 
     /** Sends the captured photo on a background thread and removes the temporary file afterwards. */
@@ -839,12 +923,267 @@ class AlarmService : Service() {
             try {
                 SmtpMailer.send(config, file)
                 EventLog.add("photo email sent to ${config.recipient}")
+                setSendNotice("Photo email sent to ${config.recipient}", true)
             } catch (e: Exception) {
-                EventLog.add("photo email failed: ${e.message ?: e.javaClass.simpleName}")
+                val reason = e.message ?: e.javaClass.simpleName
+                EventLog.add("photo email failed: $reason")
+                setSendNotice("Photo email failed: $reason", false)
             } finally {
                 file.delete()
             }
         }, "photo-email").start()
+    }
+
+    // ------------------------------------------------------------------ recording email
+
+    /**
+     * Emails a finished voice recording to the same address, on the same SMTP account, as the photo.
+     * A recording longer than [MAX_EMAIL_ATTACHMENT_BYTES] is split into numbered parts of at most
+     * 16 MB each so every email stays under the provider's 25 MB limit. The recording is AAC ADTS,
+     * so the parts can be concatenated in part-number order and played again, and the parts that did
+     * arrive are still playable if a later part is missing or failed to send. Runs on a background
+     * thread and only sends when the phone has internet inside the 2-minute window - otherwise
+     * nothing is sent and the recording is never retried later.
+     */
+    private fun emailRecording(uri: Uri?, file: File?, baseName: String) {
+        val details = emailDetailsOrNull("recording email") ?: run {
+            setSendNotice("Recording NOT emailed: the email settings are incomplete", false)
+            return
+        }
+        val total = recordingOutputSize(uri, file)
+        if (total <= 0L) {
+            EventLog.add("recording email skipped: the recording is empty")
+            setSendNotice("Recording NOT emailed: the recording file is empty", false)
+            return
+        }
+        if (!awaitInternetConnection()) {
+            EventLog.add("recording email skipped: no internet connection within 2 minutes")
+            setSendNotice("Recording NOT emailed: no internet within 2 minutes", false)
+            return
+        }
+
+        EventLog.add("recording email: ${total / 1024} KB, split into parts of at most " +
+            "${MAX_EMAIL_ATTACHMENT_BYTES / 1024 / 1024} MB")
+        var sent = 0
+        var produced = 0
+        var exhausted = false
+        var input: InputStream? = null
+        try {
+            val stream = openRecordingInput(uri, file) ?: throw IOException("cannot open the recording file")
+            input = stream
+            val buffer = ByteArray(64 * 1024)
+            val window = ByteArray(ADTS_ALIGN_WINDOW_BYTES)
+            var carry = ByteArray(0)
+            // Parts are produced until the stream ends. A failing part is skipped (its bytes are simply
+            // missing from the joined file) but the following parts are still sent, so a missing or
+            // failed part never stops the rest of the recording from being delivered.
+            while (!exhausted) {
+                val partFileName = recordingPartFileName(baseName, produced + 1)
+                val partFile = File(cacheDir, partFileName)
+                var written = 0L
+                FileOutputStream(partFile).use { out ->
+                    if (carry.isNotEmpty()) {
+                        out.write(carry)
+                        written += carry.size
+                        carry = ByteArray(0)
+                    }
+                    while (written < MAX_EMAIL_ATTACHMENT_BYTES) {
+                        val want = minOf(buffer.size.toLong(), MAX_EMAIL_ATTACHMENT_BYTES - written).toInt()
+                        val read = stream.read(buffer, 0, want)
+                        if (read <= 0) {
+                            exhausted = true
+                            break
+                        }
+                        out.write(buffer, 0, read)
+                        written += read
+                    }
+                    if (!exhausted && written >= MAX_EMAIL_ATTACHMENT_BYTES) {
+                        // End the part on an AAC frame boundary so every part is a valid .aac on its own.
+                        // The look-ahead bytes that belong to the next part are carried over, never dropped.
+                        val winLen = readFully(stream, window)
+                        if (winLen <= 0) {
+                            exhausted = true
+                        } else {
+                            val cut = adtsFrameStart(window, winLen)
+                            val start = if (cut < 0) 0 else cut
+                            if (start > 0) {
+                                out.write(window, 0, start)
+                                written += start
+                            }
+                            carry = window.copyOfRange(start, winLen)
+                        }
+                    }
+                }
+                if (written == 0L) {
+                    partFile.delete()
+                    break
+                }
+                produced++
+                val subject = "Security Services voice recording part $produced"
+                val body = "Audio recorded automatically by Security Services on the Volume Down trigger.\n" +
+                    "This is part $produced of the recording \"$baseName\" (about ${total / 1024} KB in total).\n" +
+                    "Device: ${Build.MODEL}\nTime: ${timestamp()}\n" +
+                    "Each part is raw AAC (.aac) audio. To replay the whole recording, save every part you " +
+                    "received and concatenate them in part-number order into one .aac file (Windows example: " +
+                    "copy /b ${baseName}.part01.aac+${baseName}.part02.aac+${baseName}.part03.aac ${baseName}.aac). " +
+                    "AAC is a streaming format, so the parts that did arrive can still be concatenated and " +
+                    "played even if a later part is missing or failed to be delivered - the audio then simply " +
+                    "stops at the last part you received."
+                try {
+                    SmtpMailer.send(
+                        mailConfig(details, subject, body),
+                        partFile,
+                        partFileName,
+                        "application/octet-stream"
+                    )
+                    sent++
+                    EventLog.add("recording email: part $produced sent")
+                } catch (e: Exception) {
+                    EventLog.add("recording email part $produced failed: ${e.message ?: e.javaClass.simpleName}")
+                }
+                partFile.delete()
+            }
+        } catch (e: Exception) {
+            EventLog.add("recording email stopped: ${e.message ?: e.javaClass.simpleName}")
+        } finally {
+            try {
+                input?.close()
+            } catch (e: Exception) {
+            }
+        }
+
+        when {
+            produced == 0 -> setSendNotice("Recording NOT emailed: the recording could not be read", false)
+            sent == 0 -> setSendNotice("Recording email FAILED (0/$produced parts sent)", false)
+            sent < produced -> setSendNotice(
+                "Recording email incomplete: $sent/$produced parts sent to ${details.recipient}",
+                false
+            )
+            else -> setSendNotice(
+                "Recording emailed to ${details.recipient} ($produced part${if (produced > 1) "s" else ""})",
+                true
+            )
+        }
+    }
+
+    /**
+     * The numbered, rejoinable file name of one recording part, e.g. voice_20250101_120000.part03.aac.
+     * The .aac extension is kept so each part is recognised as audio and the rejoined file plays as-is.
+     */
+    private fun recordingPartFileName(baseName: String, part: Int): String =
+        "${baseName}.part" + part.toString().padStart(2, '0') + ".aac"
+
+    /** The recording's display name without its extension, used as the base of the part file names. */
+    private fun recordingBaseName(uri: Uri?, file: File?): String {
+        val name = file?.name ?: uri?.let { displayNameOf(it) } ?: "voice_recording"
+        val base = name.substringBeforeLast('.')
+        return if (base.isBlank()) "voice_recording" else base
+    }
+
+    private fun displayNameOf(uri: Uri): String? = try {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** The byte size of the finished recording, whether it is a plain file or a content:// URI. */
+    private fun recordingOutputSize(uri: Uri?, file: File?): Long {
+        file?.let { return it.length() }
+        val u = uri ?: return 0L
+        return try {
+            contentResolver.query(u, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    /** Opens the finished recording for reading, from either its content:// URI or its plain file. */
+    private fun openRecordingInput(uri: Uri?, file: File?): InputStream? = try {
+        if (uri != null) contentResolver.openInputStream(uri) else file?.inputStream()
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Fills [buffer] from [input] (a stream may return fewer bytes than asked); returns bytes read. */
+    private fun readFully(input: InputStream, buffer: ByteArray): Int {
+        var total = 0
+        while (total < buffer.size) {
+            val n = input.read(buffer, total, buffer.size - total)
+            if (n < 0) break
+            total += n
+        }
+        return total
+    }
+
+    /**
+     * Returns the index of the first AAC ADTS frame start in [data] (first [length] bytes), or -1 when
+     * there is none. A frame starts with the 12-bit sync 0xFFF, layer 00, a valid sampling-frequency
+     * index and a plausible frame length - the checks keep random audio bytes from looking like a frame.
+     */
+    private fun adtsFrameStart(data: ByteArray, length: Int): Int {
+        var i = 0
+        while (i + 7 <= length) {
+            if ((data[i].toInt() and 0xFF) == 0xFF && (data[i + 1].toInt() and 0xF6) == 0xF0) {
+                val frequencyIndex = (data[i + 2].toInt() and 0x3C) shr 2
+                val frameLength = ((data[i + 3].toInt() and 0x03) shl 11) or
+                    ((data[i + 4].toInt() and 0xFF) shl 3) or
+                    ((data[i + 5].toInt() and 0xE0) shr 5)
+                if (frequencyIndex < 13 && frameLength >= 7) return i
+            }
+            i++
+        }
+        return -1
+    }
+
+    // ---------------------------------------------------------------- internet check
+
+    /** True when the phone currently has an internet-capable network (Wi-Fi or mobile data). */
+    private fun hasInternetConnection(): Boolean {
+        return try {
+            val connectivity = getSystemService(ConnectivityManager::class.java) ?: return false
+            val network = connectivity.activeNetwork ?: return false
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Waits up to [INTERNET_WAIT_MS] (2 minutes) for an internet connection. Returns true as soon as
+     * one is available, false when the whole window passed without internet. Blocks, so it must NOT
+     * run on the main thread. A false result means the caller must give up - the app never resends the
+     * file later, even if internet returns after the 2-minute window.
+     */
+    private fun awaitInternetConnection(): Boolean {
+        val deadline = SystemClock.elapsedRealtime() + INTERNET_WAIT_MS
+        while (true) {
+            if (hasInternetConnection()) {
+                EventLog.add("internet connection available - sending")
+                return true
+            }
+            if (SystemClock.elapsedRealtime() >= deadline) {
+                EventLog.add("no internet connection within 2 minutes")
+                return false
+            }
+            try {
+                Thread.sleep(INTERNET_POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+    }
+
+    /** Stores the last email result so the app's main screen can show it as a notification banner. */
+    private fun setSendNotice(message: String, ok: Boolean) {
+        prefs.lastEmailNotice = message
+        prefs.lastEmailNoticeOk = ok
+        EventLog.add("NOTICE: $message")
     }
 
     /**

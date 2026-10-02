@@ -85,6 +85,7 @@ class MainActivity : Activity() {
     private lateinit var dndView: TextView
     private lateinit var logView: TextView
     private lateinit var emailConfigView: LinearLayout
+    private lateinit var sendNoticeView: TextView
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -120,8 +121,10 @@ class MainActivity : Activity() {
         val statusCard = card()
         statusView = tv("", 20f, true)
         soundView = tv("", 14f)
+        sendNoticeView = tv("", 14f, true)
         statusCard.addView(statusView)
         statusCard.addView(soundView)
+        statusCard.addView(sendNoticeView)
         root.addView(statusCard)
 
         // ---- sound + volume
@@ -309,18 +312,19 @@ class MainActivity : Activity() {
         }
         actionCard.addView(startRecBtn.also { gap(it) })
         actionCard.addView(tv(
-            "Recordings are saved continuously as M4A audio. The default is the phone's Recordings/Security Services folder. " +
+            "Recordings are saved continuously as AAC audio (.aac). The default is the phone's Recordings/Security Services folder. " +
                 "The app requests the microphone permission automatically when it opens - allow the dialog. If you grant " +
                 "it while armed, the app re-arms the alarm itself. Android also shows a small foreground-service status " +
                 "notification while the microphone is active (hidden on the lock screen).",
             12f, false, GREY
         ))
-        // Photo-by-email settings. Shown only while the matching Volume Down action is selected.
+        // Photo/recording email settings. Always shown, so the recipient, SMTP account and password
+        // can be set at any time (the recording action reuses exactly the same settings).
         emailConfigView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        emailConfigView.addView(tv("Photo email settings", 15f, true).also { gap(it) })
+        emailConfigView.addView(tv("Photo / recording email settings", 15f, true).also { gap(it) })
 
         val emailTo = editField(
-            "Send photo to (email address)",
+            "Send photo / recording to (email address)",
             prefs.emailPhotoRecipient,
             android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
         ) { prefs.emailPhotoRecipient = it }
@@ -366,12 +370,18 @@ class MainActivity : Activity() {
             gap(this)
         })
         emailConfigView.addView(tv(
-            "The photo is emailed straight from the phone through your own email account, so no server " +
+            "Emails are sent straight from the phone through your own email account, so no server " +
                 "is needed. An app password is usually required: for Gmail, turn on 2-Step Verification, " +
                 "then create an App password (Google Account > Security > App passwords) and paste it above. " +
-                "Example: server smtp.gmail.com, port 465, STARTTLS off. Grant the camera permission when " +
-                "Android asks. Holding Volume Down for 2 seconds takes one photo and sends it; at most one " +
-                "photo every 2 seconds. The phone needs internet and the SMTP server must be reachable.",
+                "Example: server smtp.gmail.com, port 465, STARTTLS off. The same account is used for both " +
+                "the photo and for voice recordings. Grant the camera permission when Android asks. " +
+                "Holding Volume Down for 2 seconds takes one photo and sends it (at most one every 2 seconds); " +
+                "when a voice recording finishes, it is emailed too. The recording is AAC (.aac), split into " +
+                "numbered parts of at most 16 MB each so every email stays under the 25 MB limit email providers " +
+                "enforce; concatenate the received parts in number order to replay the whole recording, and the " +
+                "parts you already have still play even if a later part is missing. The phone must have internet: " +
+                "if no connection is available within 2 minutes " +
+                "of the trigger, the photo or recording is not sent, and it is NOT sent later when internet returns.",
             12f, false, GREY
         ))
         gap(emailConfigView)
@@ -752,6 +762,11 @@ class MainActivity : Activity() {
             else -> { statusView.text = "○  Not armed - reopen the app to re-arm"; statusView.setTextColor(GREY) }
         }
         soundView.text = "Sound: " + prefs.soundName.ifEmpty { "(none chosen - the phone's default alarm tone will play)" }
+        // Email notification banner: the result of the last photo / recording send, shown on this screen.
+        val emailNotice = prefs.lastEmailNotice
+        sendNoticeView.visibility = if (emailNotice.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        sendNoticeView.text = if (emailNotice.isEmpty()) "" else "Email notification: $emailNotice"
+        sendNoticeView.setTextColor(if (prefs.lastEmailNoticeOk) GREEN else RED)
         recordingView.text = "Recording folder: " + if (prefs.recordingTreeUri == null) {
             "Recordings/Security Services (default)"
         } else {
@@ -833,14 +848,10 @@ class MainActivity : Activity() {
         })
     }
 
-    /** Shows the photo-email settings only while the matching Volume Down action is selected. */
+    /** The email settings stay visible at all times, so the recipient and SMTP account can be set any time. */
     private fun updateEmailConfigVisibility() {
         if (!::emailConfigView.isInitialized) return
-        emailConfigView.visibility = if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
-            android.view.View.VISIBLE
-        } else {
-            android.view.View.GONE
-        }
+        emailConfigView.visibility = android.view.View.VISIBLE
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()

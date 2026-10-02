@@ -60,16 +60,25 @@ first number, or capture one photo and email it - whether the phone is locked, u
    automatically). **START RECORDING now (test)** lets you verify the mic pipeline from the app.
    Choose a folder if needed; otherwise files are saved under **Recordings/Security Services** (with a fallback
    folder if the phone refuses that location). Once armed, **hold Volume Down for 2 seconds** to start recording,
-   and tap **STOP RECORDING** in the app to finish the current M4A file (the notification shows "RECORDING VOICE"
-   while it runs). Recording also stops when the file reaches 300 MB or the app is closed.
+   and tap **STOP RECORDING** in the app to finish the current AAC file (`.aac`; the notification shows "RECORDING VOICE"
+   while it runs). Recording also stops when the file reaches 300 MB or the app is closed. When a recording
+   finishes it is also emailed to the **Send photo / recording to** address (see item 9). The recording is AAC,
+   split into numbered parts of at most 16 MB each so every email stays under the 25 MB limit most providers
+   enforce; concatenate the parts in number order to replay the whole recording, and the parts already received
+   still play even if a later part is missing.
 
-9. To use **Photo by email**, select **Capture one photo and email it** in the Volume Down action section.
-   The photo-email settings then appear right below: enter the recipient address, your own email address (the
-   account the photo is sent from), an email app password, the SMTP server and port, and choose SSL/TLS or
-   STARTTLS. Allow the camera permission when Android asks. Example (Gmail): turn on 2-Step Verification, create
-   an **App password** (Google Account > Security > App passwords), paste it as the password, and use server
-   `smtp.gmail.com` with port `465` and STARTTLS off. No server of ours is involved - the email is sent straight
-   from the phone through your own account, so the phone needs internet and the SMTP server must be reachable.
+9. To use **Photo by email** / **audio recording email**, select **Capture one photo and email it** (or
+   **Start microphone voice recording**) in the Volume Down action section. The email settings are **always**
+   shown in the same section: enter the recipient address, your own email address (the account emails are sent
+   from), an email app password, the SMTP server and port, and choose SSL/TLS or STARTTLS. The same account and
+   address are used for both the photo and the recordings. Allow the camera permission when Android asks.
+   Example (Gmail): turn on 2-Step Verification, create an **App password** (Google Account > Security >
+   App passwords), paste it as the password, and use server `smtp.gmail.com` with port `465` and STARTTLS off.
+   No server of ours is involved - the email is sent straight from the phone through your own account, so the
+   phone needs internet and the SMTP server must be reachable. The app checks for an internet connection for up
+   to **2 minutes**: if a connection is available, the photo/recording is sent; if there is still no connection
+   after 2 minutes, it is **not** sent and it is **not** sent later when internet returns. The result of the last
+   send is shown as a notification line on the app's main screen.
 
 ## Part C - Daily use
 * **The app is always armed while it is open** - there is no arm/disarm button. A quiet "Security Services ARMED"
@@ -97,11 +106,13 @@ first number, or capture one photo and email it - whether the phone is locked, u
    the two-second Volume Down hold, the app calls the first number directly from its armed foreground service, only
    when no call is already in progress, including while the screen is locked. Grant the phone-call permission when
    Android asks.
-* **Photo by email**: select **Capture one photo and email it**; the settings for it appear in the same section.
-   After the two-second Volume Down hold the app takes one photo with the main (back) camera and emails it as a
-   JPEG attachment. At most one photo is sent every 2 seconds (a repeat within that window is ignored). Grant
-   camera permission when Android asks. The phone needs internet and the SMTP server must be reachable; the
-   sent/failed result and the reason are shown in Troubleshooting.
+* **Photo / recording by email**: select **Capture one photo and email it** for photos, or **Start microphone
+   voice recording** for audio; the email settings are always shown in the same section. After the two-second
+   Volume Down hold the app takes one photo with the main (back) camera and emails it as a JPEG attachment (at
+   most one photo every 2 seconds). When a recording finishes it is emailed to the same address as numbered parts
+   of at most 16 MB each. Grant camera permission when Android asks. The app waits up to 2 minutes for internet:
+   if none is available in that window the file is not sent and is not sent later. The last sent/failed result is
+   shown as a notification on the app's main screen and in Troubleshooting.
 * **Alarm flashlight**: when **Play the alarm sound** is selected, the phone's camera flashlight blinks while the
    alarm sounds and switches off when the alarm stops. Grant camera permission when Android asks.
 
@@ -124,8 +135,9 @@ first number, or capture one photo and email it - whether the phone is locked, u
 * Loud sounds can damage hearing at close range.
 
 ## Privacy
-No analytics. The app asks for internet access only for the optional **Photo by email** action, which sends the
-captured photo straight from the phone through your own email (SMTP) account - nothing is routed through any
-third-party server, and the email password is kept only in the app's private settings on the device. The
+No analytics. The app asks for internet access only for the optional **Photo/recording by email** feature, which
+sends the captured photo and any finished voice recording straight from the phone through your own email (SMTP)
+account - nothing is routed through any third-party server, and the email password is kept only in the app's
+private settings on the device. The
 accessibility service is inert unless the alarm is armed, only inspects the label of tapped buttons, and never
 records digits other than "1". Troubleshooting entries live in memory only.

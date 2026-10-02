@@ -18,6 +18,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Read-only network state, used to check for an internet connection before sending emails. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Deliberately NO RECEIVE_BOOT_COMPLETED: the alarm never starts by itself. -->
 
     <application

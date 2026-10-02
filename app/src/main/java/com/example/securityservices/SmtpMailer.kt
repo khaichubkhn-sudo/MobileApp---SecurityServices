@@ -3,7 +3,9 @@ package com.example.securityservices
 import android.util.Base64
 import java.io.BufferedReader
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.InetAddress
@@ -13,7 +15,9 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
 /**
- * Tiny, dependency-free SMTP client used to email the photo captured by the Volume Down action.
+ * Tiny, dependency-free SMTP client used to email the photo and the voice recordings captured by the
+ * Volume Down action. Large attachments are streamed rather than buffered, so a 16 MB recording part
+ * can be sent without running out of memory.
  *
  * The app has no backend, so the email is sent straight from the phone through the user's own
  * email account (SMTP). Both common secure setups are supported:
@@ -46,11 +50,17 @@ object SmtpMailer {
     )
 
     /**
-     * Sends [attachment] as a JPEG email attachment. Blocking: call it from a background thread.
+     * Sends [attachment] as an email attachment (its file name and MIME type are given by the caller).
+     * Blocking: call it from a background thread.
      * Throws [IOException] (or a socket/SSL exception) with a readable message when the server
      * refuses any step, so the caller can surface it in Troubleshooting.
      */
-    fun send(config: Config, attachment: File) {
+    fun send(
+        config: Config,
+        attachment: File,
+        attachmentName: String = "photo.jpg",
+        attachmentMime: String = "image/jpeg"
+    ) {
         var socket: Socket = openSocket(config)
         try {
             var reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
@@ -88,7 +98,7 @@ object SmtpMailer {
             code = command(reader, writer, "DATA")
             if (code != 354) throw IOException("DATA was refused ($code)")
 
-            writer.write(buildMessage(config, attachment))
+            writeMessage(writer, config, attachment, attachmentName, attachmentMime)
             writer.write("$CRLF.$CRLF")
             writer.flush()
 
@@ -171,9 +181,20 @@ object SmtpMailer {
 
     // ------------------------------------------------------------------ message building
 
-    private fun buildMessage(config: Config, attachment: File): String {
+    /**
+     * Writes one multipart message to [writer]: the small header/text part first, then the attachment
+     * streamed from disk as base64 in chunks. A large attachment is therefore never held in memory as
+     * one big string, so a 16 MB part can be emailed without running out of memory.
+     */
+    private fun writeMessage(
+        writer: OutputStreamWriter,
+        config: Config,
+        attachment: File,
+        attachmentName: String,
+        attachmentMime: String
+    ) {
         val boundary = "SecurityServices_" + System.currentTimeMillis().toString(16)
-        val body = config.body.replace("\r\n", "\n").replace("\n", CRLF)
+        val body = dotStuff(config.body.replace("\r\n", "\n").replace("\n", CRLF))
         val sb = StringBuilder()
         sb.append("From: ").append(config.from).append(CRLF)
         sb.append("To: ").append(config.recipient).append(CRLF)
@@ -188,29 +209,51 @@ object SmtpMailer {
         sb.append(CRLF)
         sb.append(body).append(CRLF)
         sb.append(CRLF)
-        // JPEG attachment part.
+        // Attachment part headers; the base64 body is streamed right after them.
         sb.append("--").append(boundary).append(CRLF)
-        sb.append("Content-Type: image/jpeg; name=\"photo.jpg\"").append(CRLF)
+        sb.append("Content-Type: ").append(attachmentMime).append("; name=\"").append(attachmentName).append("\"").append(CRLF)
         sb.append("Content-Transfer-Encoding: base64").append(CRLF)
-        sb.append("Content-Disposition: attachment; filename=\"photo.jpg\"").append(CRLF)
+        sb.append("Content-Disposition: attachment; filename=\"").append(attachmentName).append("\"").append(CRLF)
         sb.append(CRLF)
-        sb.append(wrappedBase64(attachment.readBytes())).append(CRLF)
-        sb.append("--").append(boundary).append("--")
-        return dotStuff(sb.toString())
+        writer.write(sb.toString())
+        writeAttachmentBase64(writer, attachment)
+        writer.write("--")
+        writer.write(boundary)
+        writer.write("--")
     }
 
-    /** Base64-encodes [data] and wraps it at 76 characters, as required by MIME. */
-    private fun wrappedBase64(data: ByteArray): String {
-        val raw = Base64.encodeToString(data, Base64.NO_WRAP)
-        val sb = StringBuilder(raw.length + raw.length / 76 * 2)
-        var i = 0
-        while (i < raw.length) {
-            val end = minOf(i + 76, raw.length)
-            sb.append(raw, i, end)
-            if (end < raw.length) sb.append(CRLF)
-            i = end
+    /**
+     * Streams the attachment as MIME base64, wrapped at 76 characters per line. Each chunk is a
+     * multiple of 3 bytes, so the base64 stays aligned across chunk boundaries, and only one small
+     * chunk is held in memory at a time. Base64 lines never start with '.', so no dot-stuffing is needed.
+     */
+    private fun writeAttachmentBase64(writer: OutputStreamWriter, attachment: File) {
+        FileInputStream(attachment).use { input ->
+            val chunk = ByteArray(3 * 76 * 64)
+            while (true) {
+                val read = readFully(input, chunk)
+                if (read <= 0) break
+                val encoded = Base64.encodeToString(chunk, 0, read, Base64.NO_WRAP)
+                var i = 0
+                while (i < encoded.length) {
+                    val end = minOf(i + 76, encoded.length)
+                    writer.write(encoded, i, end - i)
+                    writer.write(CRLF)
+                    i = end
+                }
+            }
         }
-        return sb.toString()
+    }
+
+    /** Fills [buffer] from [input] (a stream may return fewer bytes than asked); returns bytes read. */
+    private fun readFully(input: InputStream, buffer: ByteArray): Int {
+        var total = 0
+        while (total < buffer.size) {
+            val n = input.read(buffer, total, buffer.size - total)
+            if (n < 0) break
+            total += n
+        }
+        return total
     }
 
     /** Escapes any line that starts with '.' (SMTP dot-stuffing) so DATA cannot be ended early. */

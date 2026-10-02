@@ -228,17 +228,23 @@ class MainActivity : Activity() {
                 text = "Capture one photo and email it"
                 id = 5
             }
+            val videoMailOption = RadioButton(this@MainActivity).apply {
+                text = "Capture video and email it (hold again to stop)"
+                id = 6
+            }
             addView(alarmOption)
             addView(recordOption)
             addView(locationOption)
             addView(callOption)
             addView(photoMailOption)
+            addView(videoMailOption)
             check(
                 when (prefs.volumeDownAction) {
                     Prefs.ACTION_RECORD -> 2
                     Prefs.ACTION_LOCATION -> 3
                     Prefs.ACTION_CALL -> 4
                     Prefs.ACTION_EMAIL_PHOTO -> 5
+                    Prefs.ACTION_EMAIL_VIDEO -> 6
                     else -> 1
                 }
             )
@@ -248,6 +254,7 @@ class MainActivity : Activity() {
                     3 -> Prefs.ACTION_LOCATION
                     4 -> Prefs.ACTION_CALL
                     5 -> Prefs.ACTION_EMAIL_PHOTO
+                    6 -> Prefs.ACTION_EMAIL_VIDEO
                     else -> Prefs.ACTION_ALARM
                 }
                 prefs.sendLocationOnVolumeDown = checkedId == 3
@@ -259,6 +266,7 @@ class MainActivity : Activity() {
                 if (checkedId == 4) requestCallPermission()
                 if (checkedId == 1) requestCameraPermission()
                 if (checkedId == 5) requestCameraPermission()
+                if (checkedId == 6) requestCameraPermission()
                 updateEmailConfigVisibility()
                 refresh()
                 rearm()
@@ -350,10 +358,11 @@ class MainActivity : Activity() {
                 "notification while the microphone is active (hidden on the lock screen).",
             12f, false, GREY
         ))
-        // Photo/recording email settings. Always shown, so the recipient, SMTP account and password
-        // can be set at any time (the recording action reuses exactly the same settings).
+        // Photo/recording/video email settings. Always shown, so the recipient, SMTP account and
+        // password can be set at any time (the recording and video actions reuse exactly the same
+        // settings).
         emailConfigView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        emailConfigView.addView(tv("Photo / recording email settings", 15f, true).also { gap(it) })
+        emailConfigView.addView(tv("Photo / recording / video email settings", 15f, true).also { gap(it) })
 
         val emailTo = editField(
             "Send photo / recording to (email address)",
@@ -534,6 +543,9 @@ class MainActivity : Activity() {
             ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
         }
         if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
+            ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
+        }
+        if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_VIDEO) {
             ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
         }
     }
@@ -956,8 +968,9 @@ class MainActivity : Activity() {
                 }
             )
             // The armed service needs the camera foreground type to capture from a locked screen, so
-            // re-arm once the permission is granted and the photo action is selected.
-            if (granted && prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
+            // re-arm once the permission is granted and the photo/video action is selected.
+            if (granted && (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO ||
+                    prefs.volumeDownAction == Prefs.ACTION_EMAIL_VIDEO)) {
                 rearm()
             }
             refresh()

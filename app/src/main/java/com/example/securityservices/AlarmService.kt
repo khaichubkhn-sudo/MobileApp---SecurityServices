@@ -60,6 +60,7 @@ class AlarmService : Service() {
         const val ACTION_ARM = "com.example.securityservices.ARM"
         const val ACTION_PLAY = "com.example.securityservices.PLAY"
         const val ACTION_STOP_RECORDING = "com.example.securityservices.STOP_RECORDING"
+        const val ACTION_STOP_VIDEO = "com.example.securityservices.STOP_VIDEO"
         private const val CHANNEL_ID = "alarm_status"
         private const val NOTIF_ID = 1001
 
@@ -103,6 +104,13 @@ class AlarmService : Service() {
          * look-ahead never drops bytes (they are carried into the next part).
          */
         private const val ADTS_ALIGN_WINDOW_BYTES = 4 * 1024
+
+        /** MPEG-2 TS packet size; video email parts always end on a packet border. */
+        private const val TS_PACKET_BYTES = 188
+        /** Video emails are always truncated into parts of at most 15 MB each. */
+        private const val VIDEO_PART_BYTES = 15L * 1024L * 1024L
+        /** Name of the video folder, created next to the recordings folder. */
+        private const val VIDEO_DIR_NAME = "Security Services Videos"
 
         /**
          * How long the app waits for an internet connection before giving up on a send. If the phone
@@ -186,6 +194,10 @@ class AlarmService : Service() {
     private var lastLocationTriggerAt = 0L
     private var lastCallTriggerAt = 0L
     private var lastPhotoEmailAt = 0L
+    private var lastVideoEmailAt = 0L
+    private var videoCapture: VideoCapture? = null
+    private var videoFile: File? = null
+    private var videoIsTs = true
     private var flashlightCameraId: String? = null
     private var flashlightOn = false
 
@@ -219,7 +231,8 @@ class AlarmService : Service() {
      * or a voice recording is running. Only then does the app touch the phone's volumes; otherwise
      * the volumes are left completely alone so the user can adjust them.
      */
-    private val actionRunning: Boolean get() = player != null || recorder != null
+    private val actionRunning: Boolean get() = player != null || recorder != null ||
+        videoCapture?.isRecording == true
 
     /**
      * True once the phone's volumes have been captured for the running action, so they can be put
@@ -330,6 +343,7 @@ class AlarmService : Service() {
         when (intent?.action) {
             ACTION_PLAY -> startAlarm()
             ACTION_STOP_RECORDING -> stopRecording()
+            ACTION_STOP_VIDEO -> toggleVideoRecording()
         }
         return START_NOT_STICKY // never restarted automatically => never "armed" behind the user's back
     }
@@ -345,6 +359,7 @@ class AlarmService : Service() {
         EventLog.add("app closed")
         stopSound(updateNotification = false)
         stopRecording(updateNotification = false)
+        stopVideoRecordingAndSend(updateNotification = false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         super.onTaskRemoved(rootIntent)
@@ -353,6 +368,7 @@ class AlarmService : Service() {
     override fun onDestroy() {
         stopSound(updateNotification = false)
         stopRecording(updateNotification = false)
+        stopVideoRecordingAndSend(updateNotification = false, waitForInternet = false)
         resetVolumeHold()
         // stopSound()/stopRecording() above already gave the volumes back if they were the last
         // action; this is a safety net for an action that ended without either being called.
@@ -422,7 +438,63 @@ class AlarmService : Service() {
         return true
     }
 
-    /** Starts microphone capture directly to a file; MediaRecorder performs the streaming writes. */
+    /** First hold starts video capture; the next hold stops, saves and emails it. */
+    fun toggleVideoRecording() {
+        if (videoCapture != null) {
+            stopVideoRecordingAndSend()
+        } else {
+            startVideoRecording()
+        }
+    }
+
+    /** True while the camera is recording video for the video-email action. */
+    fun isVideoRecording(): Boolean = videoCapture?.isRecording == true
+
+    private fun startVideoRecording() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastVideoEmailAt < EMAIL_PHOTO_DEBOUNCE_MS) {
+            EventLog.add("video email ignored: only one every ${EMAIL_PHOTO_DEBOUNCE_MS / 1000}s")
+            return
+        }
+        // Also blocks a second camera open while the first one is still starting up.
+        if (videoCapture != null) return
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            EventLog.add("video email skipped: camera permission is not granted")
+            return
+        }
+        if (photoEmailConfig() == null) return
+        val withAudio = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        bringCameraToForeground()
+        if (withAudio) bringMicToForegroundSafe()
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val tmp = File(cacheDir, "video_$stamp.tmp")
+        lastVideoEmailAt = now
+        val cap = VideoCapture(this, cameraManager)
+        videoCapture = cap
+        videoFile = tmp
+        EventLog.add("VIDEO RECORDING STARTED")
+        refreshNotification()
+        cap.start(tmp, withAudio,
+            onStarted = {
+                handler.post {
+                    videoIsTs = cap.startedWithTs
+                    EventLog.add("video recording capturing")
+                    refreshNotification()
+                }
+            },
+            onError = { reason ->
+                handler.post {
+                    EventLog.add("video recording failed: $reason")
+                    videoCapture = null
+                    videoFile = null
+                    refreshNotification()
+                }
+            })
+    }
+
     fun startRecording() {
         // Claim the "recording" state up front so a re-arm racing this call still sees it and
         // backs off instead of restarting the service mid-capture (see recordStartedRecently()).
@@ -549,6 +621,53 @@ class AlarmService : Service() {
             refreshNotification()
         }
     }
+    fun stopVideoRecordingAndSend(
+        updateNotification: Boolean = true,
+        waitForInternet: Boolean = true
+    ) {
+        val cap = videoCapture ?: return
+        videoCapture = null
+        cap.stop { file ->
+            handler.post { onVideoFileReady(file, updateNotification, waitForInternet) }
+        }
+    }
+
+    private fun onVideoFileReady(
+        file: File?,
+        updateNotification: Boolean,
+        waitForInternet: Boolean
+    ) {
+        videoFile = null
+        endActionVolumes()
+        if (updateNotification && instance != null) refreshNotification()
+        if (file == null || !file.exists() || file.length() <= 0) {
+            EventLog.add("video recording stopped: no video captured")
+            if (updateNotification) setSendNotice("Video failed: no video captured", false)
+            return
+        }
+        EventLog.add("VIDEO RECORDING STOPPED (${file.length()} bytes)")
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val ext = if (videoIsTsCompat(file)) "ts" else "mp4"
+        val source = saveVideoToLibrary(file, stamp, ext) ?: file
+        Thread({
+            emailVideoFile(source, stamp, ext, waitForInternet)
+            // When the library save kept the temp copy as the email source, it is removed
+            // after the send; a saved public copy (Movies/...) is intentionally kept.
+            if (source == file) {
+                try { file.delete() } catch (_: Exception) { }
+            }
+        }, "video-email").start()
+    }
+
+    private fun videoIsTsCompat(file: File): Boolean {
+        if (videoIsTs) return true
+        return try {
+            file.extension.equals("ts", ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
 
     private fun createRecordingOutput(): java.io.FileDescriptor {
         val name = "voice_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.aac"
@@ -612,6 +731,122 @@ class AlarmService : Service() {
         EventLog.add("recording saved to ${file.absolutePath}")
         return recordingFd!!.fileDescriptor
     }
+    private fun saveVideoToLibrary(tmp: File, stamp: String, ext: String): File? {
+        val name = "video_$stamp.$ext"
+        val mime = if (ext == "ts") "video/mp2t" else "video/mp4"
+        // Sibling of the alarm-sound/voice folder picked by the user (SAF tree).
+        val treeStr = prefs.recordingTreeUri
+        if (treeStr != null) {
+            try {
+                val tree = Uri.parse(treeStr)
+                val parent = DocumentsContract.getTreeDocumentId(tree)
+                    .substringBeforeLast('/', missingDelimiterValue = "")
+                    .substringBeforeLast(':', missingDelimiterValue = "")
+                var targetParent = tree
+                if (parent.isNotEmpty()) {
+                    try {
+                        val parentDoc = DocumentsContract.buildDocumentUriUsingTree(
+                            tree, parent
+                        )
+                        targetParent = DocumentsContract.buildChildDocumentsUriUsingTree(
+                            tree, DocumentsContract.getDocumentId(parentDoc)
+                        )
+                    } catch (_: Exception) { }
+                }
+                val videoDir = findOrCreateChildDir(targetParent, VIDEO_DIR_NAME)
+                if (videoDir != null) {
+                    val doc = DocumentsContract.createDocument(
+                        contentResolver, videoDir, mime, name
+                    )
+                    if (doc != null) {
+                        contentResolver.openOutputStream(doc, "w")?.use { out ->
+                            tmp.inputStream().use { it.copyTo(out) }
+                        }
+                        EventLog.add("video saved to $VIDEO_DIR_NAME/$name")
+                        // Keep the temp file: it is still the source the email is read from and
+                        // is deleted once the send finished (see onVideoFileReady).
+                        return tmp
+                    }
+                }
+            } catch (e: Exception) {
+                EventLog.add("video save to chosen folder failed: ${e.message}")
+            }
+        }
+        // Default: device Movies library next to the Recordings voice folder.
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Video.Media.MIME_TYPE, mime)
+                    put(MediaStore.Video.Media.RELATIVE_PATH,
+                        Environment.DIRECTORY_MOVIES + "/Security Services Videos")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values
+                )
+                if (uri != null) {
+                    contentResolver.openOutputStream(uri, "w")?.use { out ->
+                        tmp.inputStream().use { it.copyTo(out) }
+                    }
+                    val done = android.content.ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                    }
+                    try { contentResolver.update(uri, done, null, null) } catch (_: Exception) { }
+                    EventLog.add("video saved to Movies/Security Services Videos/$name")
+                    // Keep the temp file as the email source; onVideoFileReady deletes it after
+                    // the send finished.
+                    return tmp
+                }
+            } catch (e: Exception) {
+                EventLog.add("video save to Movies failed: ${e.message}")
+            }
+        }
+        try {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                "Security Services Videos"
+            )
+            if (!dir.exists()) dir.mkdirs()
+            val dest = File(dir, name)
+            tmp.copyTo(dest, overwrite = true)
+            tmp.delete()
+            EventLog.add("video saved to ${dest.absolutePath}")
+            return dest
+        } catch (e: Exception) {
+            EventLog.add("video save failed: ${e.message}")
+            return if (tmp.exists()) tmp else null
+        }
+    }
+
+    private fun findOrCreateChildDir(parentChildrenUri: Uri, name: String): Uri? {
+        try {
+            contentResolver.query(
+                parentChildrenUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0)
+                    if (c.getString(1) == name) {
+                        return DocumentsContract.buildDocumentUriUsingTree(
+                            parentChildrenUri, id
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+        return try {
+            DocumentsContract.createDocument(
+                contentResolver, parentChildrenUri,
+                DocumentsContract.Document.MIME_TYPE_DIR, name
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
 
     private fun recordingSize(): Long {
         recordingFile?.let { return it.length() }
@@ -632,7 +867,10 @@ class AlarmService : Service() {
         // the service (and its foreground notification) alive - otherwise a re-arm triggered
         // by simply re-opening the app would stop the recorder mid-capture via onDestroy().
         stopSound(updateNotification = false)
-        if (recorder != null) {
+        if (recorder != null || videoCapture != null) {
+            // A running (or still starting) video capture belongs to the armed service too: a
+            // re-arm from simply re-opening the app must not stop it mid-recording (it ends via
+            // the second hold, onDestroy or a real task removal instead).
             refreshNotification()
             return
         }
@@ -840,6 +1078,7 @@ class AlarmService : Service() {
             Prefs.ACTION_CALL -> callFirstNumberIfConfigured()
             Prefs.ACTION_RECORD -> startRecording()
             Prefs.ACTION_EMAIL_PHOTO -> captureAndEmailPhoto()
+            Prefs.ACTION_EMAIL_VIDEO -> toggleVideoRecording()
             else -> if (!isPlaying) startAlarm()
         }
     }
@@ -1023,6 +1262,108 @@ class AlarmService : Service() {
             }
         }, "photo-email").start()
     }
+    private fun videoEmailConfig(ext: String): SmtpMailer.Config? {
+        val details = emailDetailsOrNull("video email") ?: return null
+        val body = "A video was recorded automatically by Security Services on the Volume Down " +
+            "trigger.\nDevice: ${Build.MODEL}\nTime: ${timestamp()}\n" +
+            "The video is attached in numbered parts of at most 15 MB " +
+            "(video_<time>.part01-of-03.$ext, ...). " +
+            "Rejoin them in part-number order into one file " +
+            "(Windows: copy /b part01+part02+... video.$ext; " +
+            "Android/Linux: cat part* > video.$ext). " +
+            "Any prefix of the parts (part 01, or 01+02, ...) already plays on its own, " +
+            "so the video stays watchable even if later parts are missing."
+        return mailConfig(details, "Security Services video", body)
+    }
+
+    private fun emailVideoFile(file: File, stamp: String, ext: String, waitForInternet: Boolean) {
+        val details = emailDetailsOrNull("video email") ?: run {
+            setSendNotice("Video NOT emailed: the email settings are incomplete", false)
+            return
+        }
+        val total = file.length()
+        if (total <= 0L) {
+            EventLog.add("video email skipped: the video is empty")
+            setSendNotice("Video NOT emailed: the video file is empty", false)
+            return
+        }
+        if (waitForInternet && !awaitInternetConnection()) {
+            EventLog.add("video email skipped: no internet connection within 2 minutes")
+            setSendNotice("Video NOT sent: no internet within 2 minutes", false)
+            return
+        }
+        val config = videoEmailConfig(ext) ?: run {
+            setSendNotice("Video NOT emailed: the email settings are incomplete", false)
+            return
+        }
+        val mime = if (ext == "ts") "video/mp2t" else "video/mp4"
+        val baseName = "video_$stamp"
+        var totalParts = ((total + VIDEO_PART_BYTES - 1) / VIDEO_PART_BYTES).toInt().coerceAtLeast(1)
+        var start = 0L
+        var produced = 0
+        var sent = 0
+        while (start < total) {
+            var end = minOf(start + VIDEO_PART_BYTES, total)
+            // Keep .ts parts on 188-byte packet borders so each part stays playable.
+            if (ext == "ts") {
+                val len = end - start
+                val aligned = (len / TS_PACKET_BYTES) * TS_PACKET_BYTES
+                if (aligned > 0 && aligned < len && start + aligned < total) {
+                    end = start + aligned
+                }
+            }
+            produced++
+            val partFile = File.createTempFile("secvid", ".part", cacheDir)
+            try {
+                copyRange(file, start, end, partFile)
+                val name = videoPartFileName(baseName, totalParts, produced, ext)
+                SmtpMailer.send(config, partFile, name, mime)
+                sent++
+                EventLog.add("video email: part $produced/$totalParts sent")
+            } catch (e: Exception) {
+                EventLog.add("video email part $produced/$totalParts failed: ${e.message}")
+            }
+            try { partFile.delete() } catch (_: Exception) { }
+            start = end
+        }
+        when {
+            produced == 0 -> setSendNotice("Video NOT emailed: video could not be read", false)
+            sent == 0 -> setSendNotice("Video email FAILED (0/$produced parts sent)", false)
+            sent < produced -> setSendNotice(
+                "Video email incomplete: $sent/$produced parts sent to ${details.recipient}",
+                false
+            )
+            else -> setSendNotice(
+                "Video emailed to ${details.recipient} ($produced part${if (produced > 1) "s" else ""})",
+                true
+            )
+        }
+    }
+
+    private fun copyRange(src: File, start: Long, end: Long, dest: File) {
+        java.io.RandomAccessFile(src, "r").use { raf ->
+            dest.outputStream().use { out ->
+                raf.seek(start)
+                var left = end - start
+                val buf = ByteArray(256 * 1024)
+                while (left > 0) {
+                    val want = minOf(buf.size.toLong(), left).toInt()
+                    val n = raf.read(buf, 0, want)
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    left -= n
+                }
+            }
+        }
+    }
+
+    private fun videoPartFileName(base: String, total: Int, part: Int, ext: String): String {
+        val width = total.toString().length.coerceAtLeast(2)
+        val num = part.toString().padStart(width, '0')
+        val tot = total.toString().padStart(width, '0')
+        return "$base.part$num-of-$tot.$ext"
+    }
+
 
     // ------------------------------------------------------------------ recording email
 
@@ -1300,6 +1641,20 @@ class AlarmService : Service() {
             EventLog.add("could not add the camera type: ${e.message ?: e.javaClass.simpleName}")
         }
     }
+    private fun bringMicToForegroundSafe() {
+        if (Build.VERSION.SDK_INT < 29 || recordingForeground) return
+        try {
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (cameraForeground) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            startForeground(NOTIF_ID, buildNotification(), types)
+            recordingForeground = true
+            EventLog.add("microphone type added to the running service")
+        } catch (e: Exception) {
+            EventLog.add("could not add the microphone type: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
 
     /** Gets one valid location, then sends one Google Maps link to each configured number. */
     private fun sendLocationIfConfigured() {
@@ -1646,12 +2001,14 @@ class AlarmService : Service() {
         )
         val playing = player != null
         val recording = recorder != null
+        val filming = videoCapture?.isRecording == true
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(
                 when {
                     playing -> "ALARM SOUNDING"
                     recording -> "RECORDING VOICE"
+                    filming -> "RECORDING VIDEO"
                     else -> "Security Services ARMED"
                 }
             )
@@ -1659,6 +2016,7 @@ class AlarmService : Service() {
                 when {
                     playing -> "Unlock the phone and open the app to stop it"
                     recording -> "Open the app and tap STOP RECORDING to finish the file"
+                    filming -> "Hold Volume Down again to stop, save and email the video"
                     else -> "Swipe the app away in Recents to disarm"
                 }
             )

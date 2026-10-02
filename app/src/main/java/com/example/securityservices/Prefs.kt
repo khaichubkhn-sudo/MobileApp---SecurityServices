@@ -160,6 +160,7 @@ class Prefs(context: Context) {
         const val ACTION_LOCATION = "location"
         const val ACTION_CALL = "call"
         const val ACTION_EMAIL_PHOTO = "email_photo"
+        const val ACTION_EMAIL_VIDEO = "email_video"
 
         /** Sensible defaults for the photo-email SMTP settings (Gmail with SSL/TLS). */
         const val DEFAULT_EMAIL_SMTP_HOST = "smtp.gmail.com"

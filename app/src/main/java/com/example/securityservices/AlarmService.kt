@@ -239,6 +239,8 @@ class AlarmService : Service() {
     private var origAlarmMuted = false
     private var origMusicMuted = false
     private var origRingMuted = false
+    /** Device-wide microphone mute captured before recording, so it can be put back afterwards. */
+    private var origMicMuted = false
 
     // ------------------------------------------------- volume-down fallback detection
     private var lastVolumes = intArrayOf()
@@ -451,6 +453,11 @@ class AlarmService : Service() {
                 EventLog.add("could not add the microphone type: ${e.message ?: e.javaClass.simpleName}")
             }
         }
+        // Max the microphone path BEFORE capture starts, regardless of the user's mute setting.
+        // The pre-recording mute state is captured inside beginActionVolumes() below and put back
+        // when the last action stops, so the user's setting is respected outside the recording.
+        beginActionVolumes() // remember the user's levels/mute BEFORE the app changes them
+        ensureMicMaxed("record-start")
         var activeRecorder: MediaRecorder? = null
         try {
             // The service already runs in the foreground; only the notification is refreshed at the
@@ -469,7 +476,6 @@ class AlarmService : Service() {
             activeRecorder.prepare()
             activeRecorder.start()
             recorder = activeRecorder
-            beginActionVolumes() // remember the user's levels before the app changes them
             enforceVolume()
             handler.post(volumeGuard)
             handler.post(recordingSizeCheck)
@@ -723,6 +729,44 @@ class AlarmService : Service() {
             }
         } catch (e: SecurityException) {
             // Some phones refuse volume changes while Do Not Disturb is active and no DND access was granted.
+        }
+        // A voice recording is running: keep the microphone path at full gain too. See
+        // ensureMicMaxed() for why this is an un-mute guard (there is no mic-volume API).
+        if (recorder != null) ensureMicMaxed("guard")
+    }
+
+    /**
+     * Keeps the microphone capture at maximum gain while a voice recording runs.
+     *
+     * Android exposes NO "microphone volume" API: capture gain is fixed by the audio HAL and
+     * AudioManager stream volumes only affect playback, so user volume settings can never lower
+     * a MediaRecorder capture in the first place. The single setting that CAN silence or cripple
+     * the capture is the device-wide microphone mute ([AudioManager.isMicrophoneMute] /
+     * [AudioManager.setMicrophoneMute], allowed by the MODIFY_AUDIO_SETTINGS permission this app
+     * already holds). "Always maxed regardless of user setting" therefore means: force that mute
+     * off right before capture starts and keep forcing it off for the whole recording (called from
+     * [startRecording] and from [enforceVolume], which runs 4x/second via volumeGuard plus on
+     * every system volume change). The previous mute state is captured in [beginActionVolumes] and
+     * put back in [restoreActionVolumes] when the last action stops.
+     *
+     * [reason] only selects the troubleshooting log text ("record-start" logs once, "guard" only
+     * logs when it actually had to un-mute mid-recording to avoid spamming the log 4x/second).
+     */
+    private fun ensureMicMaxed(reason: String) {
+        try {
+            if (!audio.isMicrophoneMute()) return
+            audio.setMicrophoneMute(false)
+            // setMicrophoneMute is asynchronous on some phones: verify, retry once.
+            if (audio.isMicrophoneMute()) audio.setMicrophoneMute(false)
+            if (reason == "record-start") {
+                EventLog.add("microphone un-muted for recording (was muted)")
+            } else if (!audio.isMicrophoneMute()) {
+                EventLog.add("microphone re-un-muted during recording (something muted it)")
+            }
+        } catch (e: Exception) {
+            if (reason == "record-start") {
+                EventLog.add("could not un-mute microphone: ${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -1416,6 +1460,8 @@ class AlarmService : Service() {
      * Captures the phone's current volumes/mute states just before an action changes them, so they
      * can be put back the moment that action stops. The values are also written to disk, so a run
      * that is killed while the action is still going puts the phone's levels back on the next start.
+     * The device-wide microphone mute is captured too, so a recording (which forces the mic
+     * un-muted for maximum gain - see [ensureMicMaxed]) can return it to the user's setting.
      */
     private fun beginActionVolumes() {
         if (actionVolumesSaved) return
@@ -1440,6 +1486,11 @@ class AlarmService : Service() {
         } catch (e: Exception) {
             false
         }
+        origMicMuted = try {
+            audio.isMicrophoneMute()
+        } catch (e: Exception) {
+            false
+        }
         actionVolumesSaved = true
         persistOriginals()
         EventLog.add(
@@ -1453,7 +1504,8 @@ class AlarmService : Service() {
             origAlarmVolume, origMusicVolume, origRingVolume,
             if (origAlarmMuted) 1 else 0,
             if (origMusicMuted) 1 else 0,
-            if (origRingMuted) 1 else 0
+            if (origRingMuted) 1 else 0,
+            if (origMicMuted) 1 else 0
         ).joinToString(",")
     }
 
@@ -1469,10 +1521,12 @@ class AlarmService : Service() {
         val values = saved.substringAfter(';', "")
             .split(",")
             .mapNotNull { it.trim().toIntOrNull() }
-        if (values.size != 6) return
+        // Older installs wrote 6 values (no mic-mute entry); current installs write 7.
+        if (values.size != 6 && values.size != 7) return
         restoreStream(AudioManager.STREAM_ALARM, values[0], values[3] == 1)
         restoreStream(AudioManager.STREAM_MUSIC, values[1], values[4] == 1)
         restoreStream(AudioManager.STREAM_RING, values[2], values[5] == 1)
+        if (values.size == 7) restoreMicMute(values[6] == 1)
         EventLog.add("volumes from the previous run were put back (it was killed mid-action)")
     }
 
@@ -1489,13 +1543,18 @@ class AlarmService : Service() {
     /**
      * Puts the phone's volumes/mute states back to the levels they had before the running action
      * started, and drops the on-disk record. Safe to call twice; never runs while an action is still
-     * using the volume.
+     * using the volume. Also puts back the microphone mute the recording forced off, so the user's
+     * setting is respected again once the capture is finished.
      */
     private fun restoreActionVolumes() {
         if (!actionVolumesSaved || actionRunning) return
         restoreStream(AudioManager.STREAM_ALARM, origAlarmVolume, origAlarmMuted)
         restoreStream(AudioManager.STREAM_MUSIC, origMusicVolume, origMusicMuted)
         restoreStream(AudioManager.STREAM_RING, origRingVolume, origRingMuted)
+        // The guard below avoids touching the mic mute during a pure-alarm run (also muted then ==
+        // muted now is the common case and restoreMicMute early-outs there anyway), while a just
+        // finished recording always leaves muted==false and restores a previously-muted mic.
+        restoreMicMute(origMicMuted)
         actionVolumesSaved = false
         // The app just wrote the volumes back: restart the Volume Down detection from a clean
         // baseline so the restore is never mistaken for a Volume Up press.
@@ -1516,6 +1575,14 @@ class AlarmService : Service() {
                 wasMuted && !mutedNow -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_MUTE, 0)
                 !wasMuted && mutedNow -> audio.adjustStreamVolume(stream, AudioManager.ADJUST_UNMUTE, 0)
             }
+        } catch (e: Exception) {
+        }
+    }
+
+    /** Puts back the device-wide microphone mute captured in [beginActionVolumes]. */
+    private fun restoreMicMute(wasMuted: Boolean) {
+        try {
+            if (audio.isMicrophoneMute() != wasMuted) audio.setMicrophoneMute(wasMuted)
         } catch (e: Exception) {
         }
     }

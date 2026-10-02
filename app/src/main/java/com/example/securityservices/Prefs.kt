@@ -120,7 +120,8 @@ class Prefs(context: Context) {
     /**
      * The phone's volume/mute state captured just before the app's own volume setting is applied -
      * i.e. when the alarm sound starts or a voice recording starts - encoded as
-     * "alarm,music,ring,alarmMuted,musicMuted,ringMuted" (each mute flag is 1 or 0). Kept on disk so
+     * "alarm,music,ring,alarmMuted,musicMuted,ringMuted,micMuted" (each mute flag is 1 or 0).
+     * Older installs wrote 6 values (no micMuted entry); readers accept both. Kept on disk so
      * the levels can be put back even if the app is killed while the action is still running.
      */
     var savedVolumes: String?

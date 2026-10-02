@@ -46,4 +46,6 @@ tasks.matching { it.name == "assembleDebug" }.configureEach {
 
 // No third-party libraries on purpose: the app only uses the Android framework.
 dependencies {
+    // Test-only (never shipped): assertions for the plain-JVM unit tests in app/src/test.
+    testImplementation("junit:junit:4.13.2")
 }

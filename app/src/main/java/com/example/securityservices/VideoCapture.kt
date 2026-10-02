@@ -33,8 +33,8 @@ private object Dep {
 }
 
 // Back-camera video recorder, no preview surface.
-// Prefers MPEG-2 TS (.ts): any byte prefix split at 188-byte packet borders
-// stays playable; rejoins via plain concatenation (copy /b, cat).
+// Prefers MPEG-2 TS (.ts): the email splitter cuts on keyframe boundaries, so
+// every part plays on its own; rejoin via plain concatenation (copy /b, cat).
 // Falls back to MP4 when the device refuses TS.
 class VideoCapture(
     private val context: Context,

@@ -1264,15 +1264,21 @@ class AlarmService : Service() {
     }
     private fun videoEmailConfig(ext: String): SmtpMailer.Config? {
         val details = emailDetailsOrNull("video email") ?: return null
+        // .ts parts are cut at keyframes and open with picture and sound on their own;
+        // byte-split .mp4 parts only play after being rejoined into one file.
+        val standalone = if (ext == "ts")
+            "Every .ts part starts at its own keyframe, so each part - and any prefix of " +
+                "parts - opens with both picture and sound on its own, even if later parts " +
+                "are missing. "
+        else ""
         val body = "A video was recorded automatically by Security Services on the Volume Down " +
             "trigger.\nDevice: ${Build.MODEL}\nTime: ${timestamp()}\n" +
             "The video is attached in numbered parts of at most 15 MB " +
             "(video_<time>.part01-of-03.$ext, ...). " +
-            "Rejoin them in part-number order into one file " +
+            standalone +
+            "Rejoin the parts in part-number order into one file " +
             "(Windows: copy /b part01+part02+... video.$ext; " +
-            "Android/Linux: cat part* > video.$ext). " +
-            "Any prefix of the parts (part 01, or 01+02, ...) already plays on its own, " +
-            "so the video stays watchable even if later parts are missing."
+            "Android/Linux: cat part* > video.$ext)."
         return mailConfig(details, "Security Services video", body)
     }
 
@@ -1298,20 +1304,18 @@ class AlarmService : Service() {
         }
         val mime = if (ext == "ts") "video/mp2t" else "video/mp4"
         val baseName = "video_$stamp"
-        var totalParts = ((total + VIDEO_PART_BYTES - 1) / VIDEO_PART_BYTES).toInt().coerceAtLeast(1)
+        // Work out every cut before sending so the parts are numbered with their real total.
+        // A .ts stream is cut on keyframe boundaries (TsSplit) so each part starts with its own
+        // PAT/PMT tables and a keyframe - without that, later parts would play sound with no
+        // picture. A stream TsSplit cannot parse - or a non-.ts file - falls back to plain cuts
+        // (packet-aligned for .ts), which still keeps every part at or below 15 MB.
+        val cuts = (if (ext == "ts") TsSplit.cuts(file, VIDEO_PART_BYTES) else null)
+            ?: plainVideoCuts(total, ext == "ts")
+        val totalParts = (cuts.size + 1).coerceAtLeast(1)
         var start = 0L
         var produced = 0
         var sent = 0
-        while (start < total) {
-            var end = minOf(start + VIDEO_PART_BYTES, total)
-            // Keep .ts parts on 188-byte packet borders so each part stays playable.
-            if (ext == "ts") {
-                val len = end - start
-                val aligned = (len / TS_PACKET_BYTES) * TS_PACKET_BYTES
-                if (aligned > 0 && aligned < len && start + aligned < total) {
-                    end = start + aligned
-                }
-            }
+        for (end in cuts + total) {
             produced++
             val partFile = File.createTempFile("secvid", ".part", cacheDir)
             try {
@@ -1355,6 +1359,23 @@ class AlarmService : Service() {
                 }
             }
         }
+    }
+
+    /**
+     * Plain interior cut points every [VIDEO_PART_BYTES] - on a 188-byte packet border for .ts
+     * files - used when [TsSplit] cannot parse the stream (or the file is not a .ts).
+     */
+    private fun plainVideoCuts(total: Long, tsAligned: Boolean): List<Long> {
+        val cuts = ArrayList<Long>()
+        var start = 0L
+        while (start + VIDEO_PART_BYTES < total) {
+            var end = start + VIDEO_PART_BYTES
+            if (tsAligned) end = (end / TS_PACKET_BYTES) * TS_PACKET_BYTES
+            if (end <= start) break
+            cuts.add(end)
+            start = end
+        }
+        return cuts
     }
 
     private fun videoPartFileName(base: String, total: Int, part: Int, ext: String): String {

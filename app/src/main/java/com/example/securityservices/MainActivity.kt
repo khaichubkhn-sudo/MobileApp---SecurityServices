@@ -87,6 +87,27 @@ class MainActivity : Activity() {
     private lateinit var emailConfigView: LinearLayout
     private lateinit var sendNoticeView: TextView
 
+    /** Root of the normal settings UI — hidden until the app lock is passed. */
+    private lateinit var mainContent: ScrollView
+    /** Full-screen lock gate shown over everything until unlocked. */
+    private lateinit var lockGate: LinearLayout
+    private lateinit var lockTitle: TextView
+    private lateinit var lockHint: TextView
+    private lateinit var lockInput1: EditText
+    private lateinit var lockInput2: EditText
+    private lateinit var lockError: TextView
+    private lateinit var lockPrimaryBtn: Button
+    private lateinit var lockResetBtn: Button
+
+    /** True once the lock gate was passed for this visible session. Reset when backgrounded. */
+    private var lockUnlocked = false
+    /** Set in onStop so onResume knows the screen was really left (vs a permission popup). */
+    private var wasStopped = false
+    /** True after onCreate finished building BOTH the main UI and the lock gate. */
+    private var lockUiReady = false
+    /** Defers permission dialogs / auto-arm / auto-settings until the user unlocks. */
+    private var pendingStartupFlows = false
+
     private val ticker = object : Runnable {
         override fun run() {
             refresh()
@@ -99,6 +120,11 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        // Lock gate starts engaged: nothing below runs (no arm, no permission dialogs)
+        // until applyLockState() unlocks after the password check.
+        lockUnlocked = false
+        pendingStartupFlows = true
+        val frame = android.widget.FrameLayout(this)
         if (!AlarmService.isArmed) AlarmService.resetSmsQuotaForAppStart()
         if (prefs.sendLocationOnVolumeDown && prefs.volumeDownAction != Prefs.ACTION_LOCATION) {
             prefs.volumeDownAction = Prefs.ACTION_LOCATION
@@ -113,7 +139,13 @@ class MainActivity : Activity() {
             setBackgroundColor(0xFFF2F2F2.toInt())
             addView(root)
         }
-        setContentView(scroll)
+        mainContent = scroll
+        frame.addView(scroll, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
+        buildLockGate(frame)
+        // Hide the window background flash of the settings until the gate decides.
+        setContentView(frame)
+        lockUiReady = true
+        applyLockState()
 
         root.addView(tv("Security Services", 26f, true))
 
@@ -450,41 +482,30 @@ class MainActivity : Activity() {
         logCard.addView(logView)
         root.addView(logCard)
 
-        requestNotificationPermission()
-        // Automatically request the microphone permissions on every launch (no button, no extra
-        // taps): the alarm's foreground service includes the microphone type whenever the
-        // permission is available. Delayed slightly so a pending notification-permission dialog
-        // does not swallow it on first run.
-        ui.postDelayed({ requestRecordingPermissions() }, 400)
-        // Always armed. Arm only after the microphone dialog settles (see onRequestPermissionsResult)
-        // so the very first arm already includes the microphone type - without it the phone refuses
-        // to record from the locked screen. When nothing is missing, arm straight away - but only
-        // when the service is not already running. Re-opening the app while it is armed (in
-        // particular while a voice recording is running) must NOT restart the service: restarting
-        // would stop the recorder mid-capture and email an unfinished file.
-        if (AlarmService.instance == null && !AlarmService.isArmed) {
-            if (missingRecordingPermissions().isEmpty()) {
-                ui.postDelayed({ rearm() }, 600)
-            } else {
-                armAfterPermission = true
-            }
-        }
-        // If the Volume Down trigger service is off, open its settings page when the app starts.
-        ui.postDelayed({ autoOpenAccessibilitySettings() }, 900)
-        if (prefs.volumeDownAction == Prefs.ACTION_CALL) {
-            ui.postDelayed({ requestCallPermission() }, 700)
-        }
-        if (prefs.volumeDownAction == Prefs.ACTION_ALARM) {
-            ui.postDelayed({ requestCameraPermission() }, 700)
-        }
-        if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
-            ui.postDelayed({ requestCameraPermission() }, 700)
-        }
+        // Everything below needs the screen unlocked: permission dialogs, auto-arm and
+        // auto-settings must never appear above the lock gate. runStartupFlows() executes
+        // them once applyLockState() unlocks the gate.
+        if (lockUnlocked) runStartupFlows() else pendingStartupFlows = true
     }
 
     override fun onResume() {
         super.onResume()
-        ui.post(ticker)
+        // Re-engage the gate whenever the app screen is viewed again after being
+        // backgrounded (Recents/Home/another app/screen off-on). Permission popups and
+        // Settings pages only pause — they do not stop — so they never re-lock mid-flow.
+        if (lockUiReady && wasStopped && prefs.lockEnrolled) {
+            wasStopped = false
+            lockUnlocked = false
+            applyLockState()
+        } else if (lockUiReady && !prefs.lockEnrolled && !lockUnlocked) {
+            applyLockState()
+        }
+        if (lockUnlocked) ui.post(ticker)
+    }
+
+    override fun onStop() {
+        wasStopped = true
+        super.onStop()
     }
 
     override fun onPause() {
@@ -492,9 +513,202 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    /** Startup block from onCreate, deferred until after unlock. Runs once per process. */
+    private fun runStartupFlows() {
+        if (!pendingStartupFlows) return
+        pendingStartupFlows = false
+        requestNotificationPermission()
+        ui.postDelayed({ if (lockUnlocked) requestRecordingPermissions() }, 400)
+        if (AlarmService.instance == null && !AlarmService.isArmed) {
+            if (missingRecordingPermissions().isEmpty()) {
+                ui.postDelayed({ if (lockUnlocked) rearm() }, 600)
+            } else {
+                armAfterPermission = true
+            }
+        }
+        ui.postDelayed({ if (lockUnlocked) autoOpenAccessibilitySettings() }, 900)
+        if (prefs.volumeDownAction == Prefs.ACTION_CALL) {
+            ui.postDelayed({ if (lockUnlocked) requestCallPermission() }, 700)
+        }
+        if (prefs.volumeDownAction == Prefs.ACTION_ALARM) {
+            ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
+        }
+        if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
+            ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
+        }
+    }
+
+    private fun buildLockGate(frame: android.widget.FrameLayout) {
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
+        lockGate = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFFF2F2F2.toInt())
+            setPadding(dp(24), dp(72), dp(24), dp(32))
+        }
+        lockTitle = tv("Security Services", 24f, true)
+        lockHint = tv("", 14f, false, GREY)
+        lockError = tv("", 14f, true, RED).apply { visibility = android.view.View.GONE }
+        val passType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        lockInput1 = EditText(this).apply {
+            hint = "App password"
+            inputType = passType
+        }
+        lockInput2 = EditText(this).apply {
+            hint = "Confirm app password"
+            inputType = passType
+        }
+        lockPrimaryBtn = button("Unlock", BLUE) { onLockPrimary() }
+        lockResetBtn = Button(this).apply {
+            text = "Forgot password? Reset app (erases everything)"
+            isAllCaps = false
+            textSize = 13f
+            setTextColor(RED)
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { onLockReset() }
+        }
+        lockGate.addView(lockTitle)
+        lockGate.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(10))
+        })
+        lockGate.addView(lockHint)
+        lockGate.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(16))
+        })
+        lockGate.addView(lockInput1)
+        lockGate.addView(lockInput2.also { gap(it) })
+        lockGate.addView(lockError)
+        lockGate.addView(lockPrimaryBtn.also { gap(it) })
+        lockGate.addView(lockResetBtn)
+        frame.addView(lockGate, android.widget.FrameLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    /** Setup mode (first run) vs unlock mode (every view after). Main GUI is GONE while locked. */
+    private fun applyLockState() {
+        if (!lockUiReady) return
+        if (!prefs.lockEnrolled) {
+            lockUnlocked = false
+            lockTitle.text = "Set an app password"
+            lockHint.text = "Choose a password to protect this app. " +
+                "It is stored only as an encrypted hash on this phone. " +
+                "If you forget it, the app must be reinstalled and ALL data is lost."
+            lockInput1.hint = "New app password (min 4 characters)"
+            lockInput1.text.clear()
+            lockInput2.visibility = android.view.View.VISIBLE
+            lockInput2.text.clear()
+            lockError.visibility = android.view.View.GONE
+            lockPrimaryBtn.text = "Set password"
+            lockResetBtn.visibility = android.view.View.GONE
+            mainContent.visibility = android.view.View.GONE
+            lockGate.visibility = android.view.View.VISIBLE
+            ui.removeCallbacks(ticker)
+            return
+        }
+        if (lockUnlocked) {
+            lockGate.visibility = android.view.View.GONE
+            mainContent.visibility = android.view.View.VISIBLE
+            ui.removeCallbacks(ticker)
+            ui.post(ticker)
+            refresh()
+            runStartupFlows()
+        } else {
+            lockTitle.text = "Security Services"
+            lockHint.text = "Enter your app password to view the settings. " +
+                "Forgot it? Only reinstalling the app resets it (all data is erased)."
+            lockInput1.hint = "App password"
+            lockInput1.text.clear()
+            lockInput2.visibility = android.view.View.GONE
+            lockInput2.text.clear()
+            lockError.visibility = android.view.View.GONE
+            lockPrimaryBtn.text = "Unlock"
+            lockResetBtn.visibility = android.view.View.VISIBLE
+            mainContent.visibility = android.view.View.GONE
+            lockGate.visibility = android.view.View.VISIBLE
+            ui.removeCallbacks(ticker)
+        }
+    }
+
+    private fun onLockPrimary() {
+        if (!prefs.lockEnrolled) {
+            val p1 = lockInput1.text.toString()
+            val p2 = lockInput2.text.toString()
+            if (p1.length < 4) {
+                lockError.text = "Use at least 4 characters."
+                lockError.visibility = android.view.View.VISIBLE
+                return
+            }
+            if (p1 != p2) {
+                lockError.text = "Passwords do not match."
+                lockError.visibility = android.view.View.VISIBLE
+                return
+            }
+            val salt = Crypto.newSalt()
+            val hash = Crypto.hashPassword(p1, salt)
+            if (salt.isEmpty() || hash.isEmpty()) {
+                lockError.text = "Could not save the password. Try again."
+                lockError.visibility = android.view.View.VISIBLE
+                return
+            }
+            prefs.lockSalt = salt
+            prefs.lockHash = hash
+            lockInput1.text.clear()
+            lockInput2.text.clear()
+            lockUnlocked = true
+            EventLog.add("app password set")
+            Toast.makeText(this, "Password set. It cannot be recovered.", Toast.LENGTH_LONG).show()
+            applyLockState()
+        } else {
+            val ok = Crypto.verifyPassword(lockInput1.text.toString(), prefs.lockSalt ?: "", prefs.lockHash ?: "")
+            if (ok) {
+                lockInput1.text.clear()
+                lockUnlocked = true
+                applyLockState()
+            } else {
+                lockError.text = "Wrong password."
+                lockError.visibility = android.view.View.VISIBLE
+                lockInput1.text.clear()
+            }
+        }
+    }
+
+    /** No recovery path: one-way hash. Double-tap wipes ALL settings and stops the service. */
+    private fun onLockReset() {
+        val btn = lockResetBtn
+        if (btn.tag != "confirm") {
+            btn.tag = "confirm"
+            btn.text = "Tap again to ERASE everything and start over"
+            Toast.makeText(this, "Erases all settings and passwords.", Toast.LENGTH_LONG).show()
+            ui.postDelayed({
+                if (btn.tag == "confirm") {
+                    btn.tag = null
+                    btn.text = "Forgot password? Reset app (erases everything)"
+                }
+            }, 5000)
+            return
+        }
+        try { AlarmService.instance?.stopSound(false) } catch (e: Exception) { }
+        try { AlarmService.instance?.stopRecording(false) } catch (e: Exception) { }
+        try { AlarmService.instance?.disarm() } catch (e: Exception) { }
+        stopService(Intent(this, AlarmService::class.java))
+        prefs.clearAllForLockReset()
+        EventLog.add("app reset from lock screen (forgotten password)")
+        Toast.makeText(this, "All data erased. Set a new password.", Toast.LENGTH_LONG).show()
+        lockUnlocked = false
+        pendingStartupFlows = true
+        applyLockState()
+    }
+
     // ------------------------------------------------------------------ actions
 
     private fun rearm() {
+        // Never arm while the lock gate is engaged (e.g. a picker result racing a relock).
+        if (!lockUnlocked) {
+            pendingStartupFlows = true
+            return
+        }
         // Never interrupt an active voice recording: restarting the armed service would
         // stop the recorder (and email an unfinished file). While recording, the service
         // is already armed with the correct foreground type, so just leave it alone; the
@@ -676,6 +890,8 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        // A picker must never complete while the gate is engaged: it would return to a
+        // locked screen. Keep the URI safe (persisted below) and defer re-arm to unlock.
         if (requestCode == REQ_RECORDING_FOLDER && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
             try {
@@ -704,6 +920,12 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        if (!lockUnlocked) {
+            // A permission answered while the gate re-engaged: defer the arm until unlock.
+            if (requestCode == REQ_MICROPHONE) armAfterPermission = true
+            pendingStartupFlows = true
+            return
+        }
         if (requestCode == REQ_CALL_PHONE) {
             EventLog.add(
                 if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
@@ -781,6 +1003,7 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ state -> UI
 
     private fun refresh() {
+        if (!lockUnlocked) return
         val armed = AlarmService.isArmed
         val playing = AlarmService.isPlaying
 

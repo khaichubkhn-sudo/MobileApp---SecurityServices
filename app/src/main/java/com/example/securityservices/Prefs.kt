@@ -62,10 +62,30 @@ class Prefs(context: Context) {
         get() = sp.getString("email_photo_sender", "") ?: ""
         set(v) { sp.edit().putString("email_photo_sender", v.trim()).apply() }
 
-    /** SMTP password; email providers usually require an app-specific password here. */
+    /** SMTP password; email providers usually require an app-specific password here.
+     * Stored AES/GCM-encrypted (see [Crypto]); the getter returns the plain text for SMTP use. */
     var emailPhotoPassword: String
-        get() = sp.getString("email_photo_password", "") ?: ""
-        set(v) { sp.edit().putString("email_photo_password", v).apply() }
+        get() {
+            val raw = sp.getString("email_photo_password", "") ?: ""
+            if (raw.isEmpty()) return ""
+            val plain = Crypto.decrypt(raw)
+            // One-time migration: a plain-text value saved before encryption existed is
+            // re-saved encrypted the first time it is read.
+            if (!raw.startsWith("ENC:v1:") && plain.isNotEmpty()) {
+                val enc = Crypto.encrypt(plain)
+                if (enc.isNotEmpty()) sp.edit().putString("email_photo_password", enc).apply()
+            }
+            return plain
+        }
+        set(v) {
+            if (v.isEmpty()) {
+                sp.edit().putString("email_photo_password", "").apply()
+            } else {
+                val enc = Crypto.encrypt(v)
+                // If encryption somehow failed, keep the plain value rather than losing it.
+                sp.edit().putString("email_photo_password", enc.ifEmpty { v }).apply()
+            }
+        }
 
     /** SMTP server host name, e.g. smtp.gmail.com. */
     var emailPhotoSmtpHost: String
@@ -106,6 +126,32 @@ class Prefs(context: Context) {
     var savedVolumes: String?
         get() = sp.getString("saved_volumes", null)
         set(v) { sp.edit().putString("saved_volumes", v).apply() }
+
+    // ------------------------------------------------------------ app-login lock
+
+    /** Random salt (Base64) for the salted SHA-256 hash of the app-login password. */
+    var lockSalt: String?
+        get() = sp.getString("lock_salt", null)
+        set(v) { sp.edit().putString("lock_salt", v).apply() }
+
+    /** Salted SHA-256 hash of the app-login password (one-way; the password itself is never stored). */
+    var lockHash: String?
+        get() = sp.getString("lock_hash", null)
+        set(v) { sp.edit().putString("lock_hash", v).apply() }
+
+    /** True once the user has created an app-login password. */
+    val lockEnrolled: Boolean
+        get() = !lockSalt.isNullOrEmpty() && !lockHash.isNullOrEmpty()
+
+    /**
+     * Wipes ALL user settings (login secret, email account incl. its password, volumes, sounds)
+     * so a forgotten login password can only be resolved by starting over. Callers should also
+     * stop any running service state; reinstalling the app has the same effect because
+     * android:allowBackup="false" means nothing is restored afterwards.
+     */
+    fun clearAllForLockReset() {
+        sp.edit().clear().apply()
+    }
 
     companion object {
         const val ACTION_ALARM = "alarm"

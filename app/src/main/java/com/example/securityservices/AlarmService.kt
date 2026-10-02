@@ -227,12 +227,14 @@ class AlarmService : Service() {
     // ------------------------------------------- volume control (only while an action is running)
 
     /**
-     * True while the app is doing something that uses its own volume setting: the alarm is sounding
-     * or a voice recording is running. Only then does the app touch the phone's volumes; otherwise
-     * the volumes are left completely alone so the user can adjust them.
+     * True while the app is doing something that uses its own volume setting: the alarm is sounding,
+     * a voice recording is running, or a video capture is starting up or running (the capture object
+     * exists from the moment it is requested, so the startup window is covered too). Only then does
+     * the app touch the phone's volumes; otherwise the volumes are left completely alone so the user
+     * can adjust them.
      */
     private val actionRunning: Boolean get() = player != null || recorder != null ||
-        videoCapture?.isRecording == true
+        videoCapture != null
 
     /**
      * True once the phone's volumes have been captured for the running action, so they can be put
@@ -423,6 +425,9 @@ class AlarmService : Service() {
         restoreDoNotDisturb()
         // The alarm sound is over: give the volumes back to the user (unless a recording still runs).
         endActionVolumes()
+        // removeCallbacks() above killed the guard loop even if a recording or video capture is
+        // still running: restart it so its volume/mic re-assertion keeps going for that action.
+        if (actionRunning) handler.post(volumeGuard)
         if (updateNotification) refreshNotification()
     }
 
@@ -469,6 +474,12 @@ class AlarmService : Service() {
             android.content.pm.PackageManager.PERMISSION_GRANTED
         bringCameraToForeground()
         if (withAudio) bringMicToForegroundSafe()
+        // Save the user's levels/mute BEFORE changing anything, then force the microphone path on
+        // for the whole capture (see ensureMicMaxed) so the video is recorded at full mic level no
+        // matter what the phone's mute/volume state or the app's own volume setting was before.
+        // endActionVolumes() puts it all back when this action ends.
+        beginActionVolumes()
+        if (withAudio) ensureMicMaxed("video recording")
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val tmp = File(cacheDir, "video_$stamp.tmp")
         lastVideoEmailAt = now
@@ -477,6 +488,7 @@ class AlarmService : Service() {
         videoFile = tmp
         EventLog.add("VIDEO RECORDING STARTED")
         refreshNotification()
+        handler.post(volumeGuard) // re-assert alarm volume + mic un-mute 4x/second during the capture
         cap.start(tmp, withAudio,
             onStarted = {
                 handler.post {
@@ -490,6 +502,7 @@ class AlarmService : Service() {
                     EventLog.add("video recording failed: $reason")
                     videoCapture = null
                     videoFile = null
+                    endActionVolumes() // never started: hand the saved volumes/mute straight back
                     refreshNotification()
                 }
             })
@@ -969,13 +982,14 @@ class AlarmService : Service() {
         } catch (e: SecurityException) {
             // Some phones refuse volume changes while Do Not Disturb is active and no DND access was granted.
         }
-        // A voice recording is running: keep the microphone path at full gain too. See
-        // ensureMicMaxed() for why this is an un-mute guard (there is no mic-volume API).
-        if (recorder != null) ensureMicMaxed("guard")
+        // A recording (voice or video-with-audio) is running: keep the microphone path at full gain
+        // too. See ensureMicMaxed() for why this is an un-mute guard (there is no mic-volume API).
+        if (recorder != null || videoCapture?.recordsAudio == true) ensureMicMaxed("guard")
     }
 
     /**
-     * Keeps the microphone capture at maximum gain while a voice recording runs.
+     * Keeps the microphone capture at maximum gain while a voice recording or a video capture with
+     * audio runs.
      *
      * Android exposes NO "microphone volume" API: capture gain is fixed by the audio HAL and
      * AudioManager stream volumes only affect playback, so user volume settings can never lower
@@ -984,12 +998,13 @@ class AlarmService : Service() {
      * [AudioManager.setMicrophoneMute], allowed by the MODIFY_AUDIO_SETTINGS permission this app
      * already holds). "Always maxed regardless of user setting" therefore means: force that mute
      * off right before capture starts and keep forcing it off for the whole recording (called from
-     * [startRecording] and from [enforceVolume], which runs 4x/second via volumeGuard plus on
-     * every system volume change). The previous mute state is captured in [beginActionVolumes] and
-     * put back in [restoreActionVolumes] when the last action stops.
+     * [startRecording], from [startVideoRecording], and from [enforceVolume], which runs 4x/second
+     * via volumeGuard plus on every system volume change). The previous mute state is captured in
+     * [beginActionVolumes] and put back in [restoreActionVolumes] when the last action stops.
      *
-     * [reason] only selects the troubleshooting log text ("record-start" logs once, "guard" only
-     * logs when it actually had to un-mute mid-recording to avoid spamming the log 4x/second).
+     * [reason] only selects the troubleshooting log text (any reason other than "guard" logs once
+     * at capture start; "guard" only logs when it actually had to un-mute mid-recording to avoid
+     * spamming the log 4x/second).
      */
     private fun ensureMicMaxed(reason: String) {
         try {
@@ -997,13 +1012,13 @@ class AlarmService : Service() {
             audio.setMicrophoneMute(false)
             // setMicrophoneMute is asynchronous on some phones: verify, retry once.
             if (audio.isMicrophoneMute()) audio.setMicrophoneMute(false)
-            if (reason == "record-start") {
+            if (reason != "guard") {
                 EventLog.add("microphone un-muted for recording (was muted)")
             } else if (!audio.isMicrophoneMute()) {
                 EventLog.add("microphone re-un-muted during recording (something muted it)")
             }
         } catch (e: Exception) {
-            if (reason == "record-start") {
+            if (reason != "guard") {
                 EventLog.add("could not un-mute microphone: ${e.message ?: e.javaClass.simpleName}")
             }
         }

@@ -52,6 +52,11 @@ class VideoCapture(
     var isRecording = false
         private set
 
+    /** True while this capture records an audio track (set when [start] runs). */
+    @Volatile
+    var recordsAudio = false
+        private set
+
     val startedWithTs: Boolean get() = useTs
 
     fun start(
@@ -72,6 +77,7 @@ class VideoCapture(
         thread = t
         val h = Handler(t.looper)
         outputFile = outFile
+        recordsAudio = includeAudio
         finished = false
         val rec: MediaRecorder = try {
             if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context)

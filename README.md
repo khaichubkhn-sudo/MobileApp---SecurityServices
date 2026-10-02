@@ -88,11 +88,13 @@ first number, or capture one photo and email it - whether the phone is locked, u
 * It switches off only if you swipe the app away in Recents / use "Close all" (reopen the app to re-arm).
   It never arms itself after a reboot.
 * **Volumes**: the app applies its own **Alarm volume** only while an action is running - i.e. while the alarm is
-  sounding or a voice recording is going. **As soon as that action stops, the alarm, media and ringer volumes go back
+  sounding, a voice recording is going, or a video is being captured. **As soon as that action stops, the alarm, media and ringer volumes go back
   to exactly the levels they had before it started, and while nothing is running the volume is yours to adjust.**
   Closing the app (swipe away in Recents / "Close all") stops any running action, so the volumes are handed back
   then too. The pre-action levels are also stored on the device, so they are still restored correctly even if Android
-  kills the app while an action was running.
+  kills the app while an action was running. While a recording or video with sound runs, the microphone is kept
+  un-muted at full level no matter what the phone's mute switch or volume settings were before (the previous
+  microphone state is put back afterwards).
 * **Sound or record**: the selected Volume Down action starts after a 1-second hold (works locked, unlocked, or
    with the screen off; Volume Up is ignored). With recording selected, the hold starts a voice recording and the
    ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.

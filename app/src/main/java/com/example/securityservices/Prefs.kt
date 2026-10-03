@@ -40,9 +40,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("send_location_on_volume_down", false)
         set(v) { sp.edit().putBoolean("send_location_on_volume_down", v).apply() }
 
+    /**
+     * Semicolon-separated recipient numbers for the GPS-location SMS (and for "call the first
+     * number"). The cap is shared with the input box so typing and storage can never disagree;
+     * 100 characters comfortably fits five 10-digit numbers, or five numbers with a country code.
+     */
     var locationPhoneNumbers: String
-        get() = (sp.getString("location_phone_numbers", "") ?: "").take(50)
-        set(v) { sp.edit().putString("location_phone_numbers", v.take(50)).apply() }
+        get() = (sp.getString("location_phone_numbers", "") ?: "").take(MAX_PHONE_NUMBERS_LENGTH)
+        set(v) { sp.edit().putString("location_phone_numbers", v.take(MAX_PHONE_NUMBERS_LENGTH)).apply() }
 
     var locationSmsPrefix: String
         get() = sp.getString("location_sms_prefix", "") ?: ""
@@ -161,6 +166,9 @@ class Prefs(context: Context) {
         const val ACTION_CALL = "call"
         const val ACTION_EMAIL_PHOTO = "email_photo"
         const val ACTION_EMAIL_VIDEO = "email_video"
+
+        /** Maximum length of the semicolon-separated phone-number field (fits 5+ numbers on one line). */
+        const val MAX_PHONE_NUMBERS_LENGTH = 100
 
         /** Sensible defaults for the photo-email SMTP settings (Gmail with SSL/TLS). */
         const val DEFAULT_EMAIL_SMTP_HOST = "smtp.gmail.com"

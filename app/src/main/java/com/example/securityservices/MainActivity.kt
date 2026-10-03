@@ -274,12 +274,17 @@ class MainActivity : Activity() {
         }
         actionCard.addView(actionGroup)
         val locationNumbers = EditText(this).apply {
-            hint = "Phone numbers (semicolon separated)"
-            filters = arrayOf(android.text.InputFilter.LengthFilter(50))
+            hint = "Phone numbers (semicolon separated, up to 100 characters)"
+            filters = arrayOf(android.text.InputFilter.LengthFilter(Prefs.MAX_PHONE_NUMBERS_LENGTH))
             setText(prefs.locationPhoneNumbers)
-            inputType = android.text.InputType.TYPE_CLASS_PHONE or
-                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 2
+            // One line only: no newline key, and the text scrolls horizontally while it is longer
+            // than the box (the single-line flag turns on the horizontal scroll itself).
+            inputType = android.text.InputType.TYPE_CLASS_PHONE
+            maxLines = 1
+            isSingleLine = true
+            setHorizontallyScrolling(true)
+            // Show a horizontal scrollbar whenever the text is wider than the box.
+            isHorizontalScrollBarEnabled = true
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {

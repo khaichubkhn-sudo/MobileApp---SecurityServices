@@ -101,7 +101,9 @@ first number, or capture one photo and email it - whether the phone is locked, u
    ongoing notification changes to "RECORDING VOICE". Android requires a foreground-service notification while recording.
 * **Stop it**: tap **STOP RECORDING** to finish and save the voice file, or **STOP** to silence a sounding alarm.
 * **Location SMS**: select **Send current GPS location by SMS after the trigger**, enter phone numbers separated
-   by semicolons, and optionally enter message content to place before the GPS data. Grant Location and SMS
+   by semicolons on a single line (the box holds up to 100 characters - at least five numbers - and scrolls
+   sideways when the text is longer than the box), and optionally enter message content to place before the GPS data.
+   Grant Location and SMS
    permissions when asked. The app waits for one valid location (up to 30 seconds), then sends one Google Maps link
    to each distinct number, with a maximum of 10 SMS messages after each app start. The link and sending result are shown temporarily in Troubleshooting. Android does not
    allow an app to silently switch on the system Location setting, so Location must already be enabled on the phone.

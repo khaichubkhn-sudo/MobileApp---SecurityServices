@@ -61,11 +61,12 @@ first number, or capture one photo and email it - whether the phone is locked, u
    Choose a folder if needed; otherwise files are saved under **Recordings/Security Services** (with a fallback
    folder if the phone refuses that location). Once armed, **hold Volume Down for 1 second** to start recording,
    and tap **STOP RECORDING** in the app to finish the current AAC file (`.aac`; the notification shows "RECORDING VOICE"
-   while it runs). Recording also stops when the file reaches 300 MB or the app is closed. When a recording
+   while it runs). A recording - voice or video - also stops automatically once its file reaches 1 GB, or when the
+   app is closed. When a recording
    finishes it is also emailed to the **Send photo / recording to** address (see item 9). The recording is AAC,
    split into numbered parts of at most 16 MB each so every email stays under the 25 MB limit most providers
    enforce; concatenate the parts in number order to replay the whole recording, and the parts already received
-   still play even if a later part is missing.
+   still play even if a later part is missing. The total emailed for one recording is capped at 500 MB.
 
 9. To use **Photo by email** / **audio recording email**, select **Capture one photo and email it** (or
    **Start microphone voice recording**) in the Volume Down action section. The email settings are **always**
@@ -112,7 +113,8 @@ first number, or capture one photo and email it - whether the phone is locked, u
    voice recording** for audio; the email settings are always shown in the same section. After the one-second
    Volume Down hold the app takes one photo with the main (back) camera and emails it as a JPEG attachment (at
    most one photo every 2 seconds). When a recording finishes it is emailed to the same address as numbered parts
-   of at most 16 MB each. Grant camera permission when Android asks. The app waits up to 2 minutes for internet:
+   of at most 16 MB each; the total emailed for one recording is capped at 500 MB, and a recording (voice or video)
+   is stopped automatically once it reaches 1 GB. Grant camera permission when Android asks. The app waits up to 2 minutes for internet:
    if none is available in that window the file is not sent and is not sent later. The last sent/failed result is
    shown as a notification on the app's main screen and in Troubleshooting.
 * **Alarm flashlight**: when **Play the alarm sound** is selected, the phone's camera flashlight blinks while the

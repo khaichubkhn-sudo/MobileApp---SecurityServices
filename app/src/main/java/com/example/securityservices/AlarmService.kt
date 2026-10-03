@@ -109,6 +109,23 @@ class AlarmService : Service() {
         private const val TS_PACKET_BYTES = 188
         /** Video emails are always truncated into parts of at most 15 MB each. */
         private const val VIDEO_PART_BYTES = 15L * 1024L * 1024L
+
+        /**
+         * Largest single recording - voice or video - the app captures before it stops the capture
+         * on its own (1 GB). Whichever comes first of this size or the user's second hold / STOP
+         * ends the recording; reaching the cap finalises the file (and emails it) exactly like a
+         * manual stop. The 5 s size poll means the file may overshoot this by a few seconds' worth.
+         */
+        private const val RECORDING_LIMIT_BYTES = 1024L * 1024L * 1024L
+
+        /**
+         * Largest TOTAL amount of video/audio data emailed for one Volume Down recording (500 MB).
+         * Each individual email attachment (16 MB for audio, 15 MB for video) already stays well
+         * under the provider's 25 MB per-message limit; this cap bounds the SUM of all parts so a
+         * long recording cannot flood the inbox - the remainder past 500 MB is simply not emailed.
+         */
+        private const val MAX_EMAIL_TOTAL_BYTES = 500L * 1024L * 1024L
+
         /** Name of the video folder, created next to the recordings folder. */
         private const val VIDEO_DIR_NAME = "Security Services Videos"
 
@@ -181,7 +198,8 @@ class AlarmService : Service() {
      * possible and added on demand right before the first photo is captured.
      */
     private var cameraForeground = false
-    private val recordingLimitBytes = 300L * 1024L * 1024L
+    /** Cap on a single voice recording; reaching it stops the capture automatically (see [RECORDING_LIMIT_BYTES]). */
+    private val recordingLimitBytes = RECORDING_LIMIT_BYTES
     private var focusRequest: AudioFocusRequest? = null
     private var savedFilter = -1
     private val handler = Handler(Looper.getMainLooper())
@@ -216,8 +234,27 @@ class AlarmService : Service() {
         override fun run() {
             if (recorder == null) return
             if (recordingSize() >= recordingLimitBytes) {
-                EventLog.add("recording stopped at 300 MB")
+                EventLog.add("recording stopped at ${recordingLimitBytes / 1024 / 1024} MB")
                 stopRecording()
+            } else {
+                handler.postDelayed(this, 5_000L)
+            }
+        }
+    }
+
+    /**
+     * Stops the video capture once the file on disk reaches [RECORDING_LIMIT_BYTES] (1 GB) so a
+     * single video can never grow past the cap. Routes through [stopVideoRecordingAndSend], so a
+     * capped video is finalised, saved and emailed exactly like a manual stop. The 5 s cadence
+     * matches the voice cap and lets the file overshoot the limit by a few seconds' worth.
+     */
+    private val videoSizeCheck = object : Runnable {
+        override fun run() {
+            if (videoCapture == null) return
+            val file = videoFile
+            if (file != null && file.length() >= RECORDING_LIMIT_BYTES) {
+                EventLog.add("video recording stopped at ${RECORDING_LIMIT_BYTES / 1024 / 1024} MB")
+                stopVideoRecordingAndSend()
             } else {
                 handler.postDelayed(this, 5_000L)
             }
@@ -489,6 +526,7 @@ class AlarmService : Service() {
         EventLog.add("VIDEO RECORDING STARTED")
         refreshNotification()
         handler.post(volumeGuard) // re-assert alarm volume + mic un-mute 4x/second during the capture
+        handler.postDelayed(videoSizeCheck, 5_000L) // stop + email automatically once the file hits 1 GB
         cap.start(tmp, withAudio,
             onStarted = {
                 handler.post {
@@ -638,6 +676,7 @@ class AlarmService : Service() {
         updateNotification: Boolean = true,
         waitForInternet: Boolean = true
     ) {
+        handler.removeCallbacks(videoSizeCheck)
         val cap = videoCapture ?: return
         videoCapture = null
         cap.stop { file ->
@@ -876,7 +915,7 @@ class AlarmService : Service() {
     fun disarm() {
         // Disarming must never cut a voice recording short: it is only the alarm sound that
         // belongs to the armed service lifecycle. (The recorder is stopped explicitly by the
-        // user, the 300 MB limit, or a process shutdown.) If a recording is running, keep
+        // user, the 1 GB size limit, or a process shutdown.) If a recording is running, keep
         // the service (and its foreground notification) alive - otherwise a re-arm triggered
         // by simply re-opening the app would stop the recorder mid-capture via onDestroy().
         stopSound(updateNotification = false)
@@ -1277,7 +1316,7 @@ class AlarmService : Service() {
             }
         }, "photo-email").start()
     }
-    private fun videoEmailConfig(ext: String): SmtpMailer.Config? {
+    private fun videoEmailConfig(ext: String, capped: Boolean): SmtpMailer.Config? {
         val details = emailDetailsOrNull("video email") ?: return null
         // .ts parts are cut at keyframes and open with picture and sound on their own;
         // byte-split .mp4 parts only play after being rejoined into one file.
@@ -1286,11 +1325,17 @@ class AlarmService : Service() {
                 "parts - opens with both picture and sound on its own, even if later parts " +
                 "are missing. "
         else ""
+        val capNote = if (capped)
+            "Only the first ${MAX_EMAIL_TOTAL_BYTES / 1024 / 1024} MB of the recording is emailed " +
+                "(the app caps each recording's emailed data at this size); the remainder stays on " +
+                "the phone. "
+        else ""
         val body = "A video was recorded automatically by Security Services on the Volume Down " +
             "trigger.\nDevice: ${Build.MODEL}\nTime: ${timestamp()}\n" +
             "The video is attached in numbered parts of at most 15 MB " +
             "(video_<time>.part01-of-03.$ext, ...). " +
             standalone +
+            capNote +
             "Rejoin the parts in part-number order into one file " +
             "(Windows: copy /b part01+part02+... video.$ext; " +
             "Android/Linux: cat part* > video.$ext)."
@@ -1313,7 +1358,16 @@ class AlarmService : Service() {
             setSendNotice("Video NOT sent: no internet within 2 minutes", false)
             return
         }
-        val config = videoEmailConfig(ext) ?: run {
+        // The TOTAL data emailed for one video is capped at MAX_EMAIL_TOTAL_BYTES (500 MB): only
+        // the first 500 MB of the recording is sent, the rest stays on the phone. For a .ts stream
+        // the cap is pulled back to a 188-byte packet border so every emailed part stays aligned.
+        var emailTotal = minOf(total, MAX_EMAIL_TOTAL_BYTES)
+        if (ext == "ts") emailTotal = (emailTotal / TS_PACKET_BYTES) * TS_PACKET_BYTES
+        val capped = emailTotal < total
+        if (capped) EventLog.add(
+            "video email capped at ${emailTotal / 1024 / 1024} MB of ${total / 1024 / 1024} MB"
+        )
+        val config = videoEmailConfig(ext, capped) ?: run {
             setSendNotice("Video NOT emailed: the email settings are incomplete", false)
             return
         }
@@ -1323,14 +1377,15 @@ class AlarmService : Service() {
         // A .ts stream is cut on keyframe boundaries (TsSplit) so each part starts with its own
         // PAT/PMT tables and a keyframe - without that, later parts would play sound with no
         // picture. A stream TsSplit cannot parse - or a non-.ts file - falls back to plain cuts
-        // (packet-aligned for .ts), which still keeps every part at or below 15 MB.
-        val cuts = (if (ext == "ts") TsSplit.cuts(file, VIDEO_PART_BYTES) else null)
-            ?: plainVideoCuts(total, ext == "ts")
+        // (packet-aligned for .ts), which still keeps every part at or below 15 MB. Cuts past the
+        // 500 MB email cap are dropped, so the last part ends on the cap.
+        val cuts = ((if (ext == "ts") TsSplit.cuts(file, VIDEO_PART_BYTES) else null)
+            ?: plainVideoCuts(emailTotal, ext == "ts")).filter { it < emailTotal }
         val totalParts = (cuts.size + 1).coerceAtLeast(1)
         var start = 0L
         var produced = 0
         var sent = 0
-        for (end in cuts + total) {
+        for (end in cuts + emailTotal) {
             produced++
             val partFile = File.createTempFile("secvid", ".part", cacheDir)
             try {
@@ -1351,6 +1406,11 @@ class AlarmService : Service() {
             sent < produced -> setSendNotice(
                 "Video email incomplete: $sent/$produced parts sent to ${details.recipient}",
                 false
+            )
+            capped -> setSendNotice(
+                "Video emailed to ${details.recipient} (first ${emailTotal / 1024 / 1024} MB, " +
+                    "$produced part${if (produced > 1) "s" else ""})",
+                true
             )
             else -> setSendNotice(
                 "Video emailed to ${details.recipient} ($produced part${if (produced > 1) "s" else ""})",
@@ -1405,12 +1465,14 @@ class AlarmService : Service() {
 
     /**
      * Emails a finished voice recording to the same address, on the same SMTP account, as the photo.
-     * A recording longer than [MAX_EMAIL_ATTACHMENT_BYTES] is split into numbered parts of at most
-     * 16 MB each so every email stays under the provider's 25 MB limit. The recording is AAC ADTS,
-     * so the parts can be concatenated in part-number order and played again, and the parts that did
-     * arrive are still playable if a later part is missing or failed to send. Runs on a background
-     * thread and only sends when the phone has internet inside the 2-minute window - otherwise
-     * nothing is sent and the recording is never retried later.
+     * The recording is split into numbered parts of at most [MAX_EMAIL_ATTACHMENT_BYTES] (16 MB) each
+     * so every email stays under the provider's 25 MB limit. The TOTAL emailed for one recording is
+     * also capped at [MAX_EMAIL_TOTAL_BYTES] (500 MB): once that much has been placed into parts the
+     * remaining parts are not produced, so a long recording cannot flood the inbox. The recording is
+     * AAC ADTS, so the parts can be concatenated in part-number order and played again, and the parts
+     * that did arrive are still playable if a later part is missing or failed to send. Runs on a
+     * background thread and only sends when the phone has internet inside the 2-minute window -
+     * otherwise nothing is sent and the recording is never retried later.
      */
     private fun emailRecording(uri: Uri?, file: File?, baseName: String) {
         val details = emailDetailsOrNull("recording email") ?: run {
@@ -1430,10 +1492,12 @@ class AlarmService : Service() {
         }
 
         EventLog.add("recording email: ${total / 1024} KB, split into parts of at most " +
-            "${MAX_EMAIL_ATTACHMENT_BYTES / 1024 / 1024} MB")
+            "${MAX_EMAIL_ATTACHMENT_BYTES / 1024 / 1024} MB, total emailed capped at " +
+            "${MAX_EMAIL_TOTAL_BYTES / 1024 / 1024} MB")
         var sent = 0
         var produced = 0
         var exhausted = false
+        var delivered = 0L // bytes already placed into parts, bounded by MAX_EMAIL_TOTAL_BYTES
         var input: InputStream? = null
         try {
             val stream = openRecordingInput(uri, file) ?: throw IOException("cannot open the recording file")
@@ -1441,10 +1505,18 @@ class AlarmService : Service() {
             val buffer = ByteArray(64 * 1024)
             val window = ByteArray(ADTS_ALIGN_WINDOW_BYTES)
             var carry = ByteArray(0)
-            // Parts are produced until the stream ends. A failing part is skipped (its bytes are simply
-            // missing from the joined file) but the following parts are still sent, so a missing or
-            // failed part never stops the rest of the recording from being delivered.
+            // Parts are produced until the stream ends or the 500 MB total email cap is reached. A
+            // failing part is skipped (its bytes are simply missing from the joined file) but the
+            // following parts are still sent, so a missing or failed part never stops the rest of
+            // the recording from being delivered.
             while (!exhausted) {
+                // Stop once the total already placed into parts has reached the cap. The last part
+                // before that is shortened so the sum never exceeds MAX_EMAIL_TOTAL_BYTES.
+                if (delivered >= MAX_EMAIL_TOTAL_BYTES) {
+                    EventLog.add("recording email capped at ${MAX_EMAIL_TOTAL_BYTES / 1024 / 1024} MB")
+                    break
+                }
+                val partCap = minOf(MAX_EMAIL_ATTACHMENT_BYTES, MAX_EMAIL_TOTAL_BYTES - delivered)
                 val partFileName = recordingPartFileName(baseName, produced + 1)
                 val partFile = File(cacheDir, partFileName)
                 var written = 0L
@@ -1454,8 +1526,8 @@ class AlarmService : Service() {
                         written += carry.size
                         carry = ByteArray(0)
                     }
-                    while (written < MAX_EMAIL_ATTACHMENT_BYTES) {
-                        val want = minOf(buffer.size.toLong(), MAX_EMAIL_ATTACHMENT_BYTES - written).toInt()
+                    while (written < partCap) {
+                        val want = minOf(buffer.size.toLong(), partCap - written).toInt()
                         val read = stream.read(buffer, 0, want)
                         if (read <= 0) {
                             exhausted = true
@@ -1464,7 +1536,7 @@ class AlarmService : Service() {
                         out.write(buffer, 0, read)
                         written += read
                     }
-                    if (!exhausted && written >= MAX_EMAIL_ATTACHMENT_BYTES) {
+                    if (!exhausted && written >= partCap) {
                         // End the part on an AAC frame boundary so every part is a valid .aac on its own.
                         // The look-ahead bytes that belong to the next part are carried over, never dropped.
                         val winLen = readFully(stream, window)
@@ -1486,6 +1558,7 @@ class AlarmService : Service() {
                     break
                 }
                 produced++
+                delivered += written
                 val subject = "Security Services voice recording part $produced"
                 val body = "Audio recorded automatically by Security Services on the Volume Down trigger.\n" +
                     "This is part $produced of the recording \"$baseName\" (about ${total / 1024} KB in total).\n" +
@@ -1526,10 +1599,15 @@ class AlarmService : Service() {
                 "Recording email incomplete: $sent/$produced parts sent to ${details.recipient}",
                 false
             )
-            else -> setSendNotice(
-                "Recording emailed to ${details.recipient} ($produced part${if (produced > 1) "s" else ""})",
-                true
-            )
+            else -> {
+                val capNote = if (delivered >= MAX_EMAIL_TOTAL_BYTES)
+                    ", first ${MAX_EMAIL_TOTAL_BYTES / 1024 / 1024} MB only" else ""
+                setSendNotice(
+                    "Recording emailed to ${details.recipient} " +
+                        "($produced part${if (produced > 1) "s" else ""}$capNote)",
+                    true
+                )
+            }
         }
     }
 

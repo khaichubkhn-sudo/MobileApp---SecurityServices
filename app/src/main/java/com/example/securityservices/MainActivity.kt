@@ -417,9 +417,11 @@ class MainActivity : Activity() {
                 "Example: server smtp.gmail.com, port 465, STARTTLS off. The same account is used for both " +
                 "the photo and for voice recordings. Grant the camera permission when Android asks. " +
                 "Holding Volume Down for 1 second takes one photo and sends it (at most one every 2 seconds); " +
-                "when a voice recording finishes, it is emailed too. The recording is AAC (.aac), split into " +
+                "when a voice recording finishes, it is emailed too. A recording (voice or video) is stopped " +
+                "automatically once it reaches 1 GB. The recording is AAC (.aac), split into " +
                 "numbered parts of at most 16 MB each so every email stays under the 25 MB limit email providers " +
-                "enforce; concatenate the received parts in number order to replay the whole recording, and the " +
+                "enforce, and the total emailed for one recording is capped at 500 MB; concatenate the received " +
+                "parts in number order to replay the whole recording, and the " +
                 "parts you already have still play even if a later part is missing. The phone must have internet: " +
                 "if no connection is available within 2 minutes " +
                 "of the trigger, the photo or recording is not sent, and it is NOT sent later when internet returns.",

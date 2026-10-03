@@ -83,7 +83,13 @@ class AlarmService : Service() {
         private const val LOCATION_TIMEOUT_MS = 30_000L
         private const val LOCATION_TRIGGER_DEBOUNCE_MS = 3_000L
         private const val CALL_TRIGGER_DEBOUNCE_MS = 3_000L
-        private const val MAX_SMS_MESSAGES_PER_APP_START = 10
+
+        /**
+         * Most SMS a single Volume Down hold may send. Every detected hold that starts a location
+         * request gets this allowance again, so a long recipient list is spread over several holds
+         * instead of one hold flooding the inbox (each message is billed separately to the user).
+         */
+        private const val MAX_SMS_MESSAGES_PER_TRIGGER = 10
         private const val FLASH_BLINK_MS = 500L
 
         /** Minimum wait between two photo emails, so a repeated hold cannot spam the inbox. */
@@ -138,12 +144,13 @@ class AlarmService : Service() {
         /** How often the internet connection is re-checked while waiting (must be well under the limit). */
         private const val INTERNET_POLL_MS = 3_000L
 
+        /**
+         * SMS already handed to the radio for the Volume Down hold currently being handled. There is
+         * no per-app-start limit any more: the counter is reset by [sendLocationIfConfigured] for every
+         * detected hold, so each hold may send up to [MAX_SMS_MESSAGES_PER_TRIGGER] messages.
+         */
         @Volatile
-        private var smsMessagesSentSinceAppStart = 0
-
-        fun resetSmsQuotaForAppStart() {
-            smsMessagesSentSinceAppStart = 0
-        }
+        private var smsMessagesSentForTrigger = 0
 
         /** Streams whose volume the phone's volume keys may adjust. */
         private val VOLUME_STREAMS = intArrayOf(
@@ -1732,6 +1739,17 @@ class AlarmService : Service() {
     }
 
     /**
+     * Stores the last GPS-location SMS result so the app's main screen can show it as a banner.
+     * Used for the per-hold message limit, which the user otherwise only ever sees as a single
+     * Troubleshooting line that every re-arm wipes; the banner stays until the next Volume Down hold.
+     */
+    private fun setSmsNotice(message: String, ok: Boolean) {
+        prefs.lastSmsNotice = message
+        prefs.lastSmsNoticeOk = ok
+        EventLog.add("NOTICE: $message")
+    }
+
+    /**
      * Makes sure the running foreground service includes the camera type, which Android 11+ requires
      * before an app in the background may open the camera. Mirrors how the microphone type is added
      * in [startRecording]; a failure is only logged, the capture attempt itself still runs.
@@ -1802,6 +1820,11 @@ class AlarmService : Service() {
             return
         }
         lastLocationTriggerAt = now
+        // This hold is accepted as a new trigger, so it starts with a full SMS allowance: clear the
+        // counter the send loop below reads, and drop the banner about the previous hold (that banner
+        // only ever reports on the hold being handled, and its limit no longer applies to this one).
+        smsMessagesSentForTrigger = 0
+        prefs.lastSmsNotice = ""
         if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) &&
             !locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         ) {
@@ -1823,25 +1846,45 @@ class AlarmService : Service() {
                 EventLog.add("GPS DATA: ${location.latitude},${location.longitude}")
                 EventLog.add("GPS SMS test data: $mapsUrl")
                 val sms = SmsManager.getDefault()
+                var sent = 0
+                var blocked = 0
                 numbers.forEach { number ->
                     val slot = synchronized(AlarmService::class.java) {
-                        if (smsMessagesSentSinceAppStart >= MAX_SMS_MESSAGES_PER_APP_START) {
+                        if (smsMessagesSentForTrigger >= MAX_SMS_MESSAGES_PER_TRIGGER) {
                             false
                         } else {
-                            smsMessagesSentSinceAppStart++
+                            smsMessagesSentForTrigger++
                             true
                         }
                     }
                     if (!slot) {
-                        EventLog.add("GPS SMS limit reached: maximum $MAX_SMS_MESSAGES_PER_APP_START messages since app start")
+                        blocked++
+                        EventLog.add(
+                            "GPS SMS maximum limit reached: " +
+                                "$MAX_SMS_MESSAGES_PER_TRIGGER messages per Volume Down hold"
+                        )
                         return@forEach
                     }
                     try {
                         sms.sendTextMessage(number, null, message, null, null)
+                        sent++
                         EventLog.add("GPS SMS sent to $number")
                     } catch (e: Exception) {
                         EventLog.add("GPS SMS failed for $number: ${e.message ?: e.javaClass.simpleName}")
                     }
+                }
+                // The single log line above is easy to miss - every re-arm clears the log - so whenever
+                // this hold hit the cap, also raise the red banner on the app's main screen announcing
+                // that the maximum limit was reached. It is cleared at the start of the next Volume Down
+                // hold (see above), which is exactly when this limit stops applying to the next send.
+                if (blocked > 0) {
+                    setSmsNotice(
+                        "GPS SMS maximum limit reached: only $MAX_SMS_MESSAGES_PER_TRIGGER messages " +
+                            "can be sent per Volume Down hold - $sent sent, $blocked number" +
+                            (if (blocked > 1) "s were" else " was") +
+                            " not sent. Hold Volume Down again for a new allowance.",
+                        false
+                    )
                 }
             }
         }

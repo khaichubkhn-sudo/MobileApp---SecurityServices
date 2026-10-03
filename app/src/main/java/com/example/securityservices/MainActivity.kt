@@ -86,6 +86,8 @@ class MainActivity : Activity() {
     private lateinit var logView: TextView
     private lateinit var emailConfigView: LinearLayout
     private lateinit var sendNoticeView: TextView
+    /** Red banner for the GPS-location SMS result (e.g. the per-app-start message quota). */
+    private lateinit var smsNoticeView: TextView
 
     /** Root of the normal settings UI — hidden until the app lock is passed. */
     private lateinit var mainContent: ScrollView
@@ -125,7 +127,6 @@ class MainActivity : Activity() {
         lockUnlocked = false
         pendingStartupFlows = true
         val frame = android.widget.FrameLayout(this)
-        if (!AlarmService.isArmed) AlarmService.resetSmsQuotaForAppStart()
         if (prefs.sendLocationOnVolumeDown && prefs.volumeDownAction != Prefs.ACTION_LOCATION) {
             prefs.volumeDownAction = Prefs.ACTION_LOCATION
         }
@@ -154,9 +155,11 @@ class MainActivity : Activity() {
         statusView = tv("", 20f, true)
         soundView = tv("", 14f)
         sendNoticeView = tv("", 14f, true)
+        smsNoticeView = tv("", 14f, true)
         statusCard.addView(statusView)
         statusCard.addView(soundView)
         statusCard.addView(sendNoticeView)
+        statusCard.addView(smsNoticeView)
         root.addView(statusCard)
 
         // ---- sound + volume
@@ -1039,6 +1042,12 @@ class MainActivity : Activity() {
         sendNoticeView.visibility = if (emailNotice.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
         sendNoticeView.text = if (emailNotice.isEmpty()) "" else "Email notification: $emailNotice"
         sendNoticeView.setTextColor(if (prefs.lastEmailNoticeOk) GREEN else RED)
+        // GPS-SMS banner: the result of the last Volume Down hold's location send. The service clears it
+        // as soon as another hold starts, so it only ever reports on the send it belongs to.
+        val smsNotice = prefs.lastSmsNotice
+        smsNoticeView.visibility = if (smsNotice.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        smsNoticeView.text = if (smsNotice.isEmpty()) "" else "SMS notification: $smsNotice"
+        smsNoticeView.setTextColor(if (prefs.lastSmsNoticeOk) GREEN else RED)
         recordingView.text = "Recording folder: " + if (prefs.recordingTreeUri == null) {
             "Recordings/Security Services (default)"
         } else {

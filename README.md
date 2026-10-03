@@ -105,7 +105,12 @@ first number, or capture one photo and email it - whether the phone is locked, u
    sideways when the text is longer than the box), and optionally enter message content to place before the GPS data.
    Grant Location and SMS
    permissions when asked. The app waits for one valid location (up to 30 seconds), then sends one Google Maps link
-   to each distinct number, with a maximum of 10 SMS messages after each app start. The link and sending result are shown temporarily in Troubleshooting. Android does not
+   to each distinct number, with a maximum of 10 SMS messages per Volume Down hold - the allowance is counted per
+   detected hold, not per app start, so holding Volume Down again sends to the list again (up to 10 more messages
+   each time) with no need to reopen the app. The link and sending result are shown temporarily in Troubleshooting,
+   and when the cap stops a send a red **SMS notification** banner appears at the top of the app stating that the
+   **GPS SMS maximum limit** was reached, how many messages were sent and how many numbers were not; it disappears
+   as soon as the next Volume Down hold starts a fresh allowance. Android does not
    allow an app to silently switch on the system Location setting, so Location must already be enabled on the phone.
 * **Phone call**: select **Call the first phone number** and enter one or more semicolon-separated numbers. After
    the one-second Volume Down hold, the app calls the first number directly from its armed foreground service, only

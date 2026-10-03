@@ -117,6 +117,20 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("last_email_notice_ok", false)
         set(v) { sp.edit().putBoolean("last_email_notice_ok", v).apply() }
 
+    /**
+     * Result of the last GPS-location SMS (e.g. that hold reaching the 10-message limit); shown as a
+     * banner on the app's main screen. It is written by the trigger service and cleared as soon as the
+     * next Volume Down hold starts a fresh allowance, so it always describes the most recent hold.
+     */
+    var lastSmsNotice: String
+        get() = sp.getString("last_sms_notice", "") ?: ""
+        set(v) { sp.edit().putString("last_sms_notice", v).apply() }
+
+    /** true when [lastSmsNotice] describes a success, false when it describes a failure. */
+    var lastSmsNoticeOk: Boolean
+        get() = sp.getBoolean("last_sms_notice_ok", false)
+        set(v) { sp.edit().putBoolean("last_sms_notice_ok", v).apply() }
+
     /** Persisted Storage Access Framework tree URI for recordings, or null for the Music folder. */
     var recordingTreeUri: String?
         get() = sp.getString("recording_tree_uri", null)

@@ -88,6 +88,12 @@ class MainActivity : Activity() {
     private lateinit var sendNoticeView: TextView
     /** Red banner for the GPS-location SMS result (e.g. the per-app-start message quota). */
     private lateinit var smsNoticeView: TextView
+    /**
+     * Red permission banner tied to the current Volume Down option (e.g. camera needed for the
+     * 1st option's flash + photo). Tapping it re-requests the missing permission, or opens the
+     * app's Settings page when the user permanently denied it.
+     */
+    private lateinit var permNoticeView: TextView
 
     /** Root of the normal settings UI — hidden until the app lock is passed. */
     private lateinit var mainContent: ScrollView
@@ -156,8 +162,14 @@ class MainActivity : Activity() {
         soundView = tv("", 14f)
         sendNoticeView = tv("", 14f, true)
         smsNoticeView = tv("", 14f, true)
+        permNoticeView = tv("", 14f, true).apply {
+            setTextColor(RED)
+            visibility = android.view.View.GONE
+            setOnClickListener { onPermissionBannerTap() }
+        }
         statusCard.addView(statusView)
         statusCard.addView(soundView)
+        statusCard.addView(permNoticeView)
         statusCard.addView(sendNoticeView)
         statusCard.addView(smsNoticeView)
         root.addView(statusCard)
@@ -261,15 +273,7 @@ class MainActivity : Activity() {
                     else -> Prefs.ACTION_ALARM
                 }
                 prefs.sendLocationOnVolumeDown = checkedId == 3
-                if (checkedId == 2) requestRecordingPermissions()
-                if (checkedId == 3) {
-                    requestLocationSmsPermissions()
-                    notifyIfGpsDisabled()
-                }
-                if (checkedId == 4) requestCallPermission()
-                if (checkedId == 1) requestCameraPermission()
-                if (checkedId == 5) requestCameraPermission()
-                if (checkedId == 6) requestCameraPermission()
+                requestPermissionsForCurrentOption()
                 updateEmailConfigVisibility()
                 refresh()
                 rearm()
@@ -547,17 +551,26 @@ class MainActivity : Activity() {
             }
         }
         ui.postDelayed({ if (lockUnlocked) autoOpenAccessibilitySettings() }, 900)
-        if (prefs.volumeDownAction == Prefs.ACTION_CALL) {
-            ui.postDelayed({ if (lockUnlocked) requestCallPermission() }, 700)
-        }
-        if (prefs.volumeDownAction == Prefs.ACTION_ALARM) {
-            ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
-        }
-        if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO) {
-            ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
-        }
-        if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_VIDEO) {
-            ui.postDelayed({ if (lockUnlocked) requestCameraPermission() }, 700)
+        ui.postDelayed({ if (lockUnlocked) requestPermissionsForCurrentOption() }, 700)
+    }
+
+    /**
+     * Asks for whatever runtime permission the current Volume Down option needs, so switching
+     * options (or reopening the app on option 1 with the camera still denied) always reminds the
+     * user instead of silently running without flash/photo. No-op when nothing is missing.
+     */
+    private fun requestPermissionsForCurrentOption() {
+        when (prefs.volumeDownAction) {
+            Prefs.ACTION_ALARM -> requestCameraPermission()
+            Prefs.ACTION_RECORD -> { /* requested at startup; banner covers the rest */ }
+            Prefs.ACTION_LOCATION -> {
+                requestLocationSmsPermissions()
+                notifyIfGpsDisabled()
+            }
+            Prefs.ACTION_CALL -> requestCallPermission()
+            Prefs.ACTION_EMAIL_PHOTO -> requestCameraPermission()
+            Prefs.ACTION_EMAIL_VIDEO -> requestCameraPermission()
+            else -> requestCameraPermission()
         }
     }
 
@@ -897,6 +910,140 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Human-readable reminder for the permission the current Volume Down option still needs, or
+     * null when everything it needs is already granted. Option 1 (alarm sound + photo) needs the
+     * camera for both the flashing flashlight and the photo capture.
+     */
+    private fun missingPermissionReminder(): String? {
+        fun cameraMissing() =
+            checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED
+        fun micMissing() = missingRecordingPermissions().isNotEmpty()
+        fun locationSmsMissing(): Boolean {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
+                PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) !=
+                PackageManager.PERMISSION_GRANTED
+            ) return true
+            return checkSelfPermission(Manifest.permission.SEND_SMS) !=
+                PackageManager.PERMISSION_GRANTED
+        }
+        fun callMissing(): Boolean {
+            if (checkSelfPermission(Manifest.permission.CALL_PHONE) !=
+                PackageManager.PERMISSION_GRANTED
+            ) return true
+            return checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
+                PackageManager.PERMISSION_GRANTED
+        }
+        return when (prefs.volumeDownAction) {
+            Prefs.ACTION_ALARM ->
+                if (cameraMissing()) "Camera permission is OFF - tap here to enable it. " +
+                    "The 1st option needs it for the flashing flashlight and the photo email."
+                else null
+            Prefs.ACTION_RECORD ->
+                if (micMissing()) "Microphone permission is OFF - tap here to enable it. " +
+                    "Voice recording needs it."
+                else null
+            Prefs.ACTION_LOCATION ->
+                if (locationSmsMissing()) "Location/SMS permission is OFF - tap here to enable " +
+                    "it. Location SMS needs GPS and SMS access (plus Location switched on)."
+                else null
+            Prefs.ACTION_CALL ->
+                if (callMissing()) "Phone permission is OFF - tap here to enable it. " +
+                    "Calling needs phone access."
+                else null
+            Prefs.ACTION_EMAIL_PHOTO ->
+                if (cameraMissing()) "Camera permission is OFF - tap here to enable it. " +
+                    "Photo email needs it."
+                else null
+            Prefs.ACTION_EMAIL_VIDEO ->
+                if (cameraMissing() || micMissing()) "Camera/microphone permission is OFF - " +
+                    "tap here to enable it. Video capture needs both."
+                else null
+            else -> null
+        }
+    }
+
+    /**
+     * Tapping the permission banner either re-shows the system dialog (first denial) or opens the
+     * app's Settings page (permanent "Don't ask again" denial), requesting exactly what the current
+     * Volume Down option needs.
+     */
+    private fun onPermissionBannerTap() {
+        when (prefs.volumeDownAction) {
+            Prefs.ACTION_ALARM, Prefs.ACTION_EMAIL_PHOTO -> {
+                if (checkSelfPermission(Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    refresh()
+                    return
+                }
+                if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) ||
+                    !prefs.cameraPermissionDeniedBefore
+                ) {
+                    requestCameraPermission()
+                } else {
+                    openAppSettings()
+                }
+            }
+            Prefs.ACTION_RECORD -> requestRecordingPermissions()
+            Prefs.ACTION_LOCATION -> {
+                if (shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION) ||
+                    shouldShowRequestPermissionRationale(Manifest.permission.SEND_SMS) ||
+                    !prefs.locationSmsPermissionDeniedBefore
+                ) {
+                    requestLocationSmsPermissions()
+                } else {
+                    openAppSettings()
+                }
+            }
+            Prefs.ACTION_CALL -> {
+                if (shouldShowRequestPermissionRationale(Manifest.permission.CALL_PHONE) ||
+                    !prefs.callPermissionDeniedBefore
+                ) {
+                    requestCallPermission()
+                } else {
+                    openAppSettings()
+                }
+            }
+            Prefs.ACTION_EMAIL_VIDEO -> {
+                if (checkSelfPermission(Manifest.permission.CAMERA) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) ||
+                        !prefs.cameraPermissionDeniedBefore
+                    ) {
+                        requestCameraPermission()
+                    } else {
+                        openAppSettings()
+                    }
+                    return
+                }
+                requestRecordingPermissions()
+            }
+            else -> refresh()
+        }
+    }
+
+    /** Opens this app's page in the system Settings so a permanently-denied permission can be flipped. */
+    private fun openAppSettings() {
+        try {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", packageName, null)
+                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            )
+            Toast.makeText(
+                this,
+                "Enable the permission in Settings, then return here",
+                Toast.LENGTH_LONG
+            ).show()
+        } catch (e: Exception) {
+            EventLog.add("open app settings failed: ${e.message}")
+        }
+    }
+
     private fun pickSound() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -957,6 +1104,9 @@ class MainActivity : Activity() {
                     "phone call permission denied - calls are unavailable"
                 }
             )
+            if (grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) {
+                prefs.callPermissionDeniedBefore = true
+            }
             refresh()
             return
         }
@@ -965,6 +1115,7 @@ class MainActivity : Activity() {
                 EventLog.add("location and SMS permissions granted")
             } else {
                 EventLog.add("location/SMS permission denied - location messages are unavailable")
+                prefs.locationSmsPermissionDeniedBefore = true
             }
             refresh()
             return
@@ -978,9 +1129,12 @@ class MainActivity : Activity() {
                     "camera permission denied - flashlight and photo email are unavailable"
                 }
             )
+            if (!granted) prefs.cameraPermissionDeniedBefore = true
             // The armed service needs the camera foreground type to capture from a locked screen, so
-            // re-arm once the permission is granted and the photo/video action is selected.
-            if (granted && (prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO ||
+            // re-arm once the permission is granted and a camera action is selected. OPTION 1
+            // (alarm + photo) needs it too - that was the missing reminder/re-arm bug.
+            if (granted && (prefs.volumeDownAction == Prefs.ACTION_ALARM ||
+                    prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO ||
                     prefs.volumeDownAction == Prefs.ACTION_EMAIL_VIDEO)) {
                 rearm()
             }
@@ -1038,6 +1192,12 @@ class MainActivity : Activity() {
             else -> { statusView.text = "○  Not armed - reopen the app to re-arm"; statusView.setTextColor(GREY) }
         }
         soundView.text = "Sound: " + prefs.soundName.ifEmpty { "(none chosen - the phone's default alarm tone will play)" }
+        // Permission banner: persistent reminder tied to the current Volume Down option, so a
+        // denied camera (option 1 needs it) is never silent. Tapping re-asks or opens Settings.
+        val permReminder = missingPermissionReminder()
+        permNoticeView.visibility =
+            if (permReminder == null) android.view.View.GONE else android.view.View.VISIBLE
+        permNoticeView.text = if (permReminder == null) "" else "⚠  $permReminder"
         // Email notification banner: the result of the last photo / recording send, shown on this screen.
         val emailNotice = prefs.lastEmailNotice
         sendNoticeView.visibility = if (emailNotice.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE

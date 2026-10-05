@@ -137,6 +137,25 @@ class Prefs(context: Context) {
         set(v) { sp.edit().putString("recording_tree_uri", v).apply() }
 
     /**
+     * True once the camera permission dialog was denied at least once. Used together with
+     * shouldShowRequestPermissionRationale() to tell "ask again" apart from a permanent
+     * "Don't ask again" denial, so the banner can open Settings when no dialog would appear.
+     */
+    var cameraPermissionDeniedBefore: Boolean
+        get() = sp.getBoolean("camera_permission_denied_before", false)
+        set(v) { sp.edit().putBoolean("camera_permission_denied_before", v).apply() }
+
+    /** Same as [cameraPermissionDeniedBefore] for the location/SMS permission group. */
+    var locationSmsPermissionDeniedBefore: Boolean
+        get() = sp.getBoolean("location_sms_permission_denied_before", false)
+        set(v) { sp.edit().putBoolean("location_sms_permission_denied_before", v).apply() }
+
+    /** Same as [cameraPermissionDeniedBefore] for the phone-call permission group. */
+    var callPermissionDeniedBefore: Boolean
+        get() = sp.getBoolean("call_permission_denied_before", false)
+        set(v) { sp.edit().putBoolean("call_permission_denied_before", v).apply() }
+
+    /**
      * The phone's volume/mute state captured just before the app's own volume setting is applied -
      * i.e. when the alarm sound starts or a voice recording starts - encoded as
      * "alarm,music,ring,alarmMuted,musicMuted,ringMuted,micMuted" (each mute flag is 1 or 0).

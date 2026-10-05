@@ -50,6 +50,10 @@ class MainActivity : Activity() {
         const val GREEN = 0xFF2E7D32.toInt()
         const val BLUE = 0xFF1565C0.toInt()
         const val GREY = 0xFF546E7A.toInt()
+        /** Watchdog interval: re-check the current option's permissions this often. */
+        const val PERM_POPUP_CHECK_MS = 2_000L
+        /** Quiet period after the user taps "Later" before the popup may appear again. */
+        const val PERM_POPUP_SNOOZE_MS = 30_000L
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
@@ -122,6 +126,19 @@ class MainActivity : Activity() {
             ui.postDelayed(this, 500)
         }
     }
+
+    /** Repeats every 2s while unlocked: pops a reminder while the current option lacks permission. */
+    private val permWatchdog = object : Runnable {
+        override fun run() {
+            maybeShowPermissionPopup()
+            ui.postDelayed(this, PERM_POPUP_CHECK_MS)
+        }
+    }
+
+    /** Currently shown permission popup, if any (never stack a second one on top). */
+    private var permPopup: android.app.AlertDialog? = null
+    /** When the popup was last dismissed via "Later" (used for the quiet period between popups). */
+    private var permPopupSnoozedUntil = 0L
 
     // ------------------------------------------------------------------ UI construction
 
@@ -273,6 +290,11 @@ class MainActivity : Activity() {
                     else -> Prefs.ACTION_ALARM
                 }
                 prefs.sendLocationOnVolumeDown = checkedId == 3
+                // New option = new permission set: drop any stale popup/snooze and re-check in 2s.
+                permPopupSnoozedUntil = 0L
+                dismissPermissionPopup()
+                ui.removeCallbacks(permWatchdog)
+                ui.postDelayed(permWatchdog, PERM_POPUP_CHECK_MS)
                 requestPermissionsForCurrentOption()
                 updateEmailConfigVisibility()
                 refresh()
@@ -525,6 +547,10 @@ class MainActivity : Activity() {
             applyLockState()
         }
         if (lockUnlocked) ui.post(ticker)
+        if (lockUnlocked) {
+            ui.removeCallbacks(permWatchdog)
+            ui.postDelayed(permWatchdog, PERM_POPUP_CHECK_MS)
+        }
     }
 
     override fun onStop() {
@@ -534,6 +560,8 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         ui.removeCallbacks(ticker)
+        ui.removeCallbacks(permWatchdog)
+        dismissPermissionPopup()
         super.onPause()
     }
 
@@ -648,6 +676,8 @@ class MainActivity : Activity() {
             mainContent.visibility = android.view.View.VISIBLE
             ui.removeCallbacks(ticker)
             ui.post(ticker)
+            ui.removeCallbacks(permWatchdog)
+            ui.postDelayed(permWatchdog, PERM_POPUP_CHECK_MS)
             refresh()
             runStartupFlows()
         } else {
@@ -664,6 +694,8 @@ class MainActivity : Activity() {
             mainContent.visibility = android.view.View.GONE
             lockGate.visibility = android.view.View.VISIBLE
             ui.removeCallbacks(ticker)
+            ui.removeCallbacks(permWatchdog)
+            dismissPermissionPopup()
         }
     }
 
@@ -1044,6 +1076,49 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 2-second watchdog body: while the screen is unlocked and visible, re-check the current
+     * Volume Down option's permissions and pop a reminder dialog when something it needs is still
+     * disabled. Never stacks (one dialog at a time), never fires while locked/backgrounded, and
+     * stays quiet for [PERM_POPUP_SNOOZE_MS] after the user taps "Later".
+     */
+    private fun maybeShowPermissionPopup() {
+        if (!lockUnlocked) return
+        if (!lockUiReady) return
+        if (permPopup?.isShowing == true) return
+        if (System.currentTimeMillis() < permPopupSnoozedUntil) return
+        val reminder = missingPermissionReminder() ?: return
+        EventLog.add("permission popup: $reminder")
+        permPopup = android.app.AlertDialog.Builder(this)
+            .setTitle("Permission needed")
+            .setMessage(reminder)
+            .setCancelable(false)
+            .setPositiveButton("Enable") { d, _ ->
+                d.dismiss()
+                permPopup = null
+                onPermissionBannerTap()
+            }
+            .setNegativeButton("Later") { d, _ ->
+                d.dismiss()
+                permPopup = null
+                permPopupSnoozedUntil = System.currentTimeMillis() + PERM_POPUP_SNOOZE_MS
+            }
+            .setOnDismissListener { permPopup = null }
+            .create()
+        try {
+            permPopup?.show()
+        } catch (e: Exception) {
+            EventLog.add("permission popup failed: ${e.message}")
+            permPopup = null
+        }
+    }
+
+    /** Dismisses the permission popup without snoozing (pause/lock/option fixed). */
+    private fun dismissPermissionPopup() {
+        try { permPopup?.dismiss() } catch (_: Exception) { }
+        permPopup = null
+    }
+
     private fun pickSound() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -1137,6 +1212,10 @@ class MainActivity : Activity() {
                     prefs.volumeDownAction == Prefs.ACTION_EMAIL_PHOTO ||
                     prefs.volumeDownAction == Prefs.ACTION_EMAIL_VIDEO)) {
                 rearm()
+            }
+            if (granted && missingPermissionReminder() == null) {
+                permPopupSnoozedUntil = 0L
+                dismissPermissionPopup()
             }
             refresh()
             return

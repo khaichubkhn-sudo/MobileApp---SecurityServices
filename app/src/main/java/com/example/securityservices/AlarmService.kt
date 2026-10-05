@@ -169,6 +169,15 @@ class AlarmService : Service() {
         val isPlaying: Boolean get() = instance?.player != null
         val isRecording: Boolean get() = instance?.recorder != null
 
+        /**
+         * True when a fresh Volume Down hold should be ignored because the alarm is already
+         * sounding. The combined alarm+photo action is the exception: a repeat hold must still
+         * reach [AlarmService.triggerVolumeAction] so another photo is captured and emailed
+         * (the sound part is a no-op while playing; the photo part has its own 2-second guard).
+         */
+        val suppressRepeatHoldWhilePlaying: Boolean get() =
+            isPlaying && instance?.currentVolumeDownAction != Prefs.ACTION_ALARM
+
         /** True when the running foreground service includes the microphone type (only true when the
          *  runtime permission was granted before the service started). Recording needs this type. */
         val hasMicrophoneForegroundType: Boolean get() = instance?.recordingForeground ?: false
@@ -212,6 +221,8 @@ class AlarmService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var audio: AudioManager
     private lateinit var prefs: Prefs
+    /** Action selected for the Volume Down hold; exposed for the trigger's repeat-hold check. */
+    private val currentVolumeDownAction: String get() = prefs.volumeDownAction
     private lateinit var locationManager: LocationManager
     private lateinit var cameraManager: CameraManager
     private var locationRequestActive = false
@@ -1140,8 +1151,20 @@ class AlarmService : Service() {
             Prefs.ACTION_RECORD -> startRecording()
             Prefs.ACTION_EMAIL_PHOTO -> captureAndEmailPhoto()
             Prefs.ACTION_EMAIL_VIDEO -> toggleVideoRecording()
-            else -> if (!isPlaying) startAlarm()
+            else -> startAlarmWithPhoto()
         }
+    }
+
+    /**
+     * First Volume Down option: plays the alarm sound and flashes (see [startAlarm]) while also
+     * capturing one photo and emailing it (see [captureAndEmailPhoto]). The photo part reuses the
+     * same "capture one photo and email it" settings and its 2-second inbox-spam guard, so a second
+     * hold while the sound is already playing still emails another photo (at most one every
+     * 2 seconds).
+     */
+    private fun startAlarmWithPhoto() {
+        if (!isPlaying) startAlarm()
+        captureAndEmailPhoto()
     }
 
     /** Places one direct call to the first semicolon-separated number in the current input. */
@@ -1226,8 +1249,15 @@ class AlarmService : Service() {
             }
             handler.post {
                 bringCameraToForeground()
+                // The alarm flashlight uses the camera's torch mode, which can block opening the
+                // camera for the photo on some phones: pause the blinking (torch off) while the
+                // photo is captured, then resume it if the alarm is still sounding.
+                val alarmBlinking = player != null &&
+                    prefs.volumeDownAction == Prefs.ACTION_ALARM
+                if (alarmBlinking) pauseFlashlightForPhoto()
                 EventLog.add("photo email: capturing one photo")
                 PhotoCapture(this, cameraManager).capture { file ->
+                    if (alarmBlinking) resumeFlashlightAfterPhoto()
                     if (file == null) {
                         EventLog.add("photo email failed: the camera returned no photo")
                         setSendNotice("Photo email failed: the camera returned no photo", false)
@@ -1950,6 +1980,30 @@ class AlarmService : Service() {
         handler.removeCallbacks(flashlightBlink)
         if (flashlightOn) setFlashlight(false)
         flashlightOn = false
+    }
+
+    /**
+     * Frees the camera for the combined alarm+photo action: stops the blink loop and switches the
+     * torch off so [PhotoCapture] can open the camera. Called on the main thread just before the
+     * capture starts.
+     */
+    private fun pauseFlashlightForPhoto() {
+        handler.removeCallbacks(flashlightBlink)
+        if (flashlightOn) setFlashlight(false)
+    }
+
+    /**
+     * Restarts the alarm blink loop after the combined alarm+photo capture finished. Only resumes
+     * while the alarm is still sounding, so stopping the sound mid-capture never restarts the flash.
+     * Called on the camera callback thread (same thread [PhotoCapture] reports back on).
+     */
+    private fun resumeFlashlightAfterPhoto() {
+        handler.post {
+            if (player != null && prefs.volumeDownAction == Prefs.ACTION_ALARM) {
+                handler.removeCallbacks(flashlightBlink)
+                handler.post(flashlightBlink)
+            }
+        }
     }
 
     private fun finishLocationRequest() {

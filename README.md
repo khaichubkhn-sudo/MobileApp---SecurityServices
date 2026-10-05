@@ -2,7 +2,7 @@
 
 A loud, fixed-volume alarm that arms itself whenever the app is open. Plays an audio file you choose
 (wav, mp3, m4a, flac, ogg, ...) from the PLAY button. While armed, holding Volume Down for 1 second runs
-the action you selected - play the alarm, start microphone recording, send the GPS location by SMS, call the
+the action you selected - play the alarm + capture one photo and email it, start microphone recording, send the GPS location by SMS, call the
 first number, or capture one photo and email it - whether the phone is locked, unlocked or the screen is off.
 
 ## Part A - Get the APK onto your phone
@@ -116,7 +116,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
    the one-second Volume Down hold, the app calls the first number directly from its armed foreground service, only
    when no call is already in progress, including while the screen is locked. Grant the phone-call permission when
    Android asks.
-* **Photo / recording by email**: select **Capture one photo and email it** for photos, or **Start microphone
+* **Photo / recording by email**: select **Play the alarm sound + capture one photo and email it** for the combined alarm + photo action, **Capture one photo and email it** for photos only, or **Start microphone
    voice recording** for audio; the email settings are always shown in the same section. After the one-second
    Volume Down hold the app takes one photo with the main (back) camera and emails it as a JPEG attachment (at
    most one photo every 2 seconds). When a recording finishes it is emailed to the same address as numbered parts
@@ -124,7 +124,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
    is stopped automatically once it reaches 1 GB. Grant camera permission when Android asks. The app waits up to 2 minutes for internet:
    if none is available in that window the file is not sent and is not sent later. The last sent/failed result is
    shown as a notification on the app's main screen and in Troubleshooting.
-* **Alarm flashlight**: when **Play the alarm sound** is selected, the phone's camera flashlight blinks while the
+* **Alarm flashlight**: when **Play the alarm sound + capture one photo and email it** is selected, the phone's camera flashlight blinks while the
    alarm sounds and switches off when the alarm stops. Grant camera permission when Android asks.
 
 ## Part D - Test the Volume Down trigger

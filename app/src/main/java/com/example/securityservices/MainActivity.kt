@@ -212,7 +212,7 @@ class MainActivity : Activity() {
         val actionGroup = RadioGroup(this).apply {
             orientation = RadioGroup.VERTICAL
             val alarmOption = RadioButton(this@MainActivity).apply {
-                text = "Play the alarm sound"
+                text = "Play the alarm sound + capture one photo and email it"
                 id = 1
             }
             val recordOption = RadioButton(this@MainActivity).apply {
@@ -424,7 +424,8 @@ class MainActivity : Activity() {
                 "then create an App password (Google Account > Security > App passwords) and paste it above. " +
                 "Example: server smtp.gmail.com, port 465, STARTTLS off. The same account is used for both " +
                 "the photo and for voice recordings. Grant the camera permission when Android asks. " +
-                "Holding Volume Down for 1 second takes one photo and sends it (at most one every 2 seconds); " +
+                "The first Volume Down option (alarm sound + photo) and the photo-only option each take " +
+                "one photo and send it per 1-second hold (at most one every 2 seconds); " +
                 "when a voice recording finishes, it is emailed too. A recording (voice or video) is stopped " +
                 "automatically once it reaches 1 GB. The recording is AAC (.aac), split into " +
                 "numbered parts of at most 16 MB each so every email stays under the 25 MB limit email providers " +

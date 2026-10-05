@@ -66,8 +66,10 @@ class AlarmAccessibilityService : AccessibilityService() {
             KeyEvent.ACTION_DOWN -> {
                 if (event.repeatCount == 0) {
                     // First press of this hold. If the alarm is already sounding there is nothing
-                    // to do; otherwise start the 1-second hold timer.
-                    if (AlarmService.isPlaying) {
+                    // to do, except for the combined alarm+photo action, where a repeat hold must
+                    // still reach the trigger so another photo is captured and emailed (the sound
+                    // part is a no-op while already playing, the photo part has its own 2s guard).
+                    if (AlarmService.suppressRepeatHoldWhilePlaying) {
                         cancelHold()
                         holdFired = false
                         return false

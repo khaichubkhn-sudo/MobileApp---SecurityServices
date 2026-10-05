@@ -37,12 +37,13 @@
             </intent-filter>
         </activity>
 
-        <!-- stopWithTask=true: swiping the app away in Recents / "Close all" stops the service (disarms). -->
+        <!-- stopWithTask=false: swiping the app away must NOT kill a photo email mid-send. The
+             service stops itself via stopSelf() once the last send finished (see onTaskRemoved). -->
         <service
             android:name=".AlarmService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback|microphone|camera"
-            android:stopWithTask="true" />
+            android:stopWithTask="false" />
 
         <service
             android:name=".AlarmAccessibilityService"

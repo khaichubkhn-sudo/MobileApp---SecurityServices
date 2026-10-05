@@ -216,6 +216,22 @@ class AlarmService : Service() {
     private var cameraForeground = false
     /** Cap on a single voice recording; reaching it stops the capture automatically (see [RECORDING_LIMIT_BYTES]). */
     private val recordingLimitBytes = RECORDING_LIMIT_BYTES
+    /**
+     * Photo emails (capture + SMTP send) still in flight. Closing the app (swipe away) must wait
+     * for these to finish instead of killing them mid-send (see [pendingShutdownAfterPhotoSend]).
+     */
+    private var pendingPhotoSends = 0
+    /**
+     * True once the task was removed (app swiped away) while photo sends were still running. The
+     * sound is stopped immediately, but stopSelf() is deferred until [pendingPhotoSends] drops to
+     * zero so the email is not lost.
+     */
+    private var pendingShutdownAfterPhotoSend = false
+    private var photoSendWakeLock: PowerManager.WakeLock? = null
+    /** Delay after switching the torch off before opening the camera (lets the camera settle). */
+    private val photoAfterTorchDelayMs = 700L
+    /** Delay before retrying a photo capture that failed while the torch was just released. */
+    private val photoRetryDelayMs = 1_500L
     private var focusRequest: AudioFocusRequest? = null
     private var savedFilter = -1
     private val handler = Handler(Looper.getMainLooper())
@@ -417,28 +433,46 @@ class AlarmService : Service() {
         stopSound(updateNotification = false)
         stopRecording(updateNotification = false)
         stopVideoRecordingAndSend(updateNotification = false)
+        // A photo capture / email that is still running must be allowed to finish: keep the service
+        // alive until the last send completes instead of killing it mid-send.
+        if (pendingPhotoSends > 0) {
+            pendingShutdownAfterPhotoSend = true
+            refreshNotification()
+            EventLog.add("app closed: finishing $pendingPhotoSends photo email(s) before stopping")
+            super.onTaskRemoved(rootIntent)
+            return
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        stopSound(updateNotification = false)
-        stopRecording(updateNotification = false)
-        stopVideoRecordingAndSend(updateNotification = false, waitForInternet = false)
-        resetVolumeHold()
-        // stopSound()/stopRecording() above already gave the volumes back if they were the last
-        // action; this is a safety net for an action that ended without either being called.
-        handler.removeCallbacks(volumeGuard)
-        stopFlashlightBlinking()
-        finishLocationRequest()
-        restoreActionVolumes()
-        try {
-            contentResolver.unregisterContentObserver(volumeObserver)
-        } catch (e: Exception) {
+        // NOTE: returning early does NOT veto destruction - the system still destroys the service.
+        // The guard below avoids actively tearing down (volumes/flash/notification/instance) while a
+        // photo send is in flight; survival itself comes from stopWithTask=false + the foreground
+        // notification + the wake lock (see beginPhotoSend), and the last send performs the deferred
+        // shutdown via finishPhotoSend.
+        if (pendingPhotoSends <= 0) {
+            stopSound(updateNotification = false)
+            stopRecording(updateNotification = false)
+            stopVideoRecordingAndSend(updateNotification = false, waitForInternet = false)
+            resetVolumeHold()
+            // stopSound()/stopRecording() above already gave the volumes back if they were the last
+            // action; this is a safety net for an action that ended without either being called.
+            handler.removeCallbacks(volumeGuard)
+            stopFlashlightBlinking()
+            finishLocationRequest()
+            restoreActionVolumes()
+            try {
+                contentResolver.unregisterContentObserver(volumeObserver)
+            } catch (e: Exception) {
+            }
+            EventLog.clear()
+            instance = null
+        } else {
+            EventLog.add("service destroy with $pendingPhotoSends photo email(s) in flight")
         }
-        EventLog.clear()
-        instance = null
         super.onDestroy()
     }
 
@@ -1234,9 +1268,17 @@ class AlarmService : Service() {
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
             EventLog.add("photo email skipped: camera permission is not granted")
+            setSendNotice("Photo NOT sent: camera permission is not granted", false)
             return
         }
-        val config = photoEmailConfig() ?: return
+        // Reserve the "in flight" slot before the background internet wait: closing the app during
+        // the 2-minute window must still wait for this photo instead of killing it unseen.
+        beginPhotoSend()
+        val config = photoEmailConfig()
+        if (config == null) {
+            finishPhotoSend()
+            return
+        }
 
         // The camera and the send only run when the phone has internet inside the 2-minute window.
         // If internet only shows up after that window, the photo is never taken and never sent.
@@ -1245,29 +1287,126 @@ class AlarmService : Service() {
                 val message = "Photo NOT sent: no internet within 2 minutes"
                 EventLog.add("photo email skipped: no internet connection within 2 minutes")
                 setSendNotice(message, false)
+                handler.post { finishPhotoSend() }
                 return@Thread
             }
             handler.post {
                 bringCameraToForeground()
                 // The alarm flashlight uses the camera's torch mode, which can block opening the
-                // camera for the photo on some phones: pause the blinking (torch off) while the
-                // photo is captured, then resume it if the alarm is still sounding.
+                // camera for the photo on some phones: pause the blinking (torch off), give the
+                // camera a moment to settle, then capture. A quick retry covers the case where the
+                // driver still reports the camera as busy right after the torch went off.
                 val alarmBlinking = player != null &&
                     prefs.volumeDownAction == Prefs.ACTION_ALARM
                 if (alarmBlinking) pauseFlashlightForPhoto()
                 EventLog.add("photo email: capturing one photo")
-                PhotoCapture(this, cameraManager).capture { file ->
-                    if (alarmBlinking) resumeFlashlightAfterPhoto()
-                    if (file == null) {
-                        EventLog.add("photo email failed: the camera returned no photo")
-                        setSendNotice("Photo email failed: the camera returned no photo", false)
-                        return@capture
-                    }
-                    EventLog.add("photo email: photo captured (${file.length()} bytes) - sending")
-                    sendPhotoEmail(config, file)
-                }
+                if (alarmBlinking) handler.postDelayed(
+                    { attemptPhotoCapture(config, alarmBlinking, false) },
+                    photoAfterTorchDelayMs
+                )
+                else attemptPhotoCapture(config, alarmBlinking, false)
             }
         }, "photo-internet-check").start()
+    }
+
+    /**
+     * Runs one photo-capture attempt for [captureAndEmailPhoto] on the main thread. When the alarm
+     * flashlight was just switched off the camera driver can still report "camera in use", so the
+     * first attempt gets one delayed retry ([retried] guards it). A failed capture releases its
+     * [finishPhotoSend] slot; a success hands the file to [sendPhotoEmail], which releases the slot
+     * once the SMTP send finished. Callers must invoke this on the main thread.
+     */
+    private fun attemptPhotoCapture(
+        config: SmtpMailer.Config,
+        alarmBlinking: Boolean,
+        retried: Boolean
+    ) {
+        PhotoCapture(applicationContext, cameraManager).capture { file ->
+            // PhotoCapture reports back on its own camera thread: hop to the main thread so the
+            // pending-send counter stays synchronous with onTaskRemoved/onDestroy.
+            handler.post {
+                if (file == null && alarmBlinking && !retried) {
+                    EventLog.add("photo email: camera busy right after torch off - retrying once")
+                    handler.postDelayed(
+                        { attemptPhotoCapture(config, alarmBlinking, true) },
+                        photoRetryDelayMs
+                    )
+                    return@post
+                }
+                if (alarmBlinking) resumeFlashlightAfterPhoto()
+                if (file == null) {
+                    EventLog.add("photo email failed: the camera returned no photo")
+                    setSendNotice("Photo email failed: the camera returned no photo", false)
+                    finishPhotoSend()
+                    return@post
+                }
+                EventLog.add("photo email: photo captured (${file.length()} bytes) - sending")
+                sendPhotoEmail(config, file)
+            }
+        }
+    }
+
+    /**
+     * Marks a photo capture/send as in flight: keeps the CPU awake and the service in the
+     * foreground so swiping the app away (or Doze) cannot kill it mid-send. Every [beginPhotoSend]
+     * must be paired with exactly one [finishPhotoSend].
+     */
+    private fun beginPhotoSend() {
+        pendingPhotoSends++
+        try {
+            if (photoSendWakeLock == null) {
+                val pm = getSystemService(PowerManager::class.java)
+                photoSendWakeLock = pm.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "SecurityServices:photo-send"
+                ).apply { setReferenceCounted(false) }
+            }
+            if (photoSendWakeLock?.isHeld != true) {
+                photoSendWakeLock?.acquire(10 * 60 * 1000L)
+            }
+        } catch (e: Exception) {
+            EventLog.add("photo email: wake lock unavailable (${e.message})")
+        }
+        // The service must be in the foreground while a send is in flight: if the app was swiped
+        // away and the process only survives because of the pending send, (re-)assert foreground
+        // state so the system does not kill the SMTP thread mid-send.
+        // NOTE: always called on the main thread (captureAndEmailPhoto -> handler.post), so the
+        // counter stays synchronous with onTaskRemoved/onDestroy - never post this to the handler.
+        try { goForeground() } catch (_: Exception) { }
+        refreshNotification()
+    }
+
+    /**
+     * Releases one [beginPhotoSend] slot. When the app was swiped away while sends were running
+     * ([pendingShutdownAfterPhotoSend]), the last send performs the deferred shutdown so the email
+     * is never cut off: volumes are restored, the foreground state removed, and the service stopped.
+     * Safe to run after the service was destroyed: every step is guarded and the temp-file delete in
+     * sendPhotoEmail already ran, so nothing is lost.
+     */
+    private fun finishPhotoSend() {
+        pendingPhotoSends = (pendingPhotoSends - 1).coerceAtLeast(0)
+        if (pendingPhotoSends == 0) {
+            try { photoSendWakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) { }
+            photoSendWakeLock = null
+        }
+        if (pendingShutdownAfterPhotoSend && pendingPhotoSends == 0) {
+            pendingShutdownAfterPhotoSend = false
+            EventLog.add("photo email(s) finished after app close - stopping service")
+            try { stopSound(updateNotification = false) } catch (_: Exception) { }
+            try { stopRecording(updateNotification = false) } catch (_: Exception) { }
+            try {
+                stopVideoRecordingAndSend(updateNotification = false, waitForInternet = false)
+            } catch (_: Exception) { }
+            try { resetVolumeHold() } catch (_: Exception) { }
+            try { handler.removeCallbacks(volumeGuard) } catch (_: Exception) { }
+            try { stopFlashlightBlinking() } catch (_: Exception) { }
+            try { finishLocationRequest() } catch (_: Exception) { }
+            try { restoreActionVolumes() } catch (_: Exception) { }
+            try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
+            try { stopSelf() } catch (_: Exception) { }
+            return
+        }
+        try { refreshNotification() } catch (_: Exception) { }
     }
 
     /** The SMTP account shared by the photo email and the recording email. */
@@ -1350,6 +1489,7 @@ class AlarmService : Service() {
                 setSendNotice("Photo email failed: $reason", false)
             } finally {
                 file.delete()
+                handler.post { finishPhotoSend() }
             }
         }, "photo-email").start()
     }
@@ -2220,6 +2360,7 @@ class AlarmService : Service() {
                     playing -> "ALARM SOUNDING"
                     recording -> "RECORDING VOICE"
                     filming -> "RECORDING VIDEO"
+                    pendingPhotoSends > 0 -> "SENDING PHOTO EMAIL"
                     else -> "Security Services ARMED"
                 }
             )
@@ -2228,6 +2369,7 @@ class AlarmService : Service() {
                     playing -> "Unlock the phone and open the app to stop it"
                     recording -> "Open the app and tap STOP RECORDING to finish the file"
                     filming -> "Hold Volume Down again to stop, save and email the video"
+                    pendingPhotoSends > 0 -> "Finishing the photo email - the service stops itself after"
                     else -> "Swipe the app away in Recents to disarm"
                 }
             )

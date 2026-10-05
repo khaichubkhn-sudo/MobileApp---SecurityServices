@@ -398,11 +398,27 @@ class MainActivity : Activity() {
         emailConfigView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         emailConfigView.addView(tv("Photo / recording / video email settings", 15f, true).also { gap(it) })
 
-        val emailTo = editField(
-            "Send photo / recording to (email address)",
-            prefs.emailPhotoRecipient,
-            android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
-        ) { prefs.emailPhotoRecipient = it }
+        val emailTo = EditText(this).apply {
+            hint = "Send photo / recording to (up to 10 email addresses, separated by ;)"
+            filters = arrayOf(android.text.InputFilter.LengthFilter(Prefs.MAX_EMAIL_RECIPIENTS_LENGTH))
+            setText(prefs.emailPhotoRecipient)
+            // Multi-line box so up to 10 addresses stay readable; typed text wraps instead
+            // of scrolling horizontally. ';' is plain text, so keep a text (not email)
+            // input type: the email-address variation would hide ';' on some keyboards.
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            maxLines = 5
+            isSingleLine = false
+            setHorizontallyScrolling(false)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    prefs.emailPhotoRecipient = s?.toString() ?: ""
+                }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
         gap(emailTo)
         emailConfigView.addView(emailTo)
 

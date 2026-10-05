@@ -57,10 +57,14 @@ class Prefs(context: Context) {
         get() = sp.getString("last_location_message", "") ?: ""
         set(v) { sp.edit().putString("last_location_message", v).apply() }
 
-    /** Recipient of the "capture one photo and email it" Volume Down action. */
+    /**
+     * Semicolon-separated recipient addresses for the photo / recording / video email
+     * (up to [MAX_EMAIL_RECIPIENTS]). The cap is shared with the input box so typing
+     * and storage can never disagree; 500 characters fits ten typical addresses.
+     */
     var emailPhotoRecipient: String
-        get() = sp.getString("email_photo_recipient", "") ?: ""
-        set(v) { sp.edit().putString("email_photo_recipient", v.trim()).apply() }
+        get() = (sp.getString("email_photo_recipient", "") ?: "").take(MAX_EMAIL_RECIPIENTS_LENGTH)
+        set(v) { sp.edit().putString("email_photo_recipient", v.trim().take(MAX_EMAIL_RECIPIENTS_LENGTH)).apply() }
 
     /** Sender address, which is also the SMTP account the photo is sent from. */
     var emailPhotoSender: String
@@ -202,6 +206,12 @@ class Prefs(context: Context) {
 
         /** Maximum length of the semicolon-separated phone-number field (fits 5+ numbers on one line). */
         const val MAX_PHONE_NUMBERS_LENGTH = 100
+
+        /** Maximum email recipients accepted in the semicolon-separated recipient field. */
+        const val MAX_EMAIL_RECIPIENTS = 10
+
+        /** Maximum length of the semicolon-separated email-recipient field (fits 10 addresses). */
+        const val MAX_EMAIL_RECIPIENTS_LENGTH = 500
 
         /** Sensible defaults for the photo-email SMTP settings (Gmail with SSL/TLS). */
         const val DEFAULT_EMAIL_SMTP_HOST = "smtp.gmail.com"

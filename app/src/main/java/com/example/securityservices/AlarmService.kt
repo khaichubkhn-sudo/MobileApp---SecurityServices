@@ -198,6 +198,23 @@ class AlarmService : Service() {
         private fun markRecordStarted() {
             lastRecordStartAt = android.os.SystemClock.elapsedRealtime()
         }
+
+        /**
+         * Splits a semicolon-separated email-recipient field into individual addresses:
+         * trimmed, empties dropped. Commas are accepted too so a pasted comma-separated
+         * list still works. De-duplication and the 10-address cap are applied by callers.
+         */
+        fun parseEmailRecipients(raw: String): List<String> =
+            raw.split(';', ',').map { it.trim() }.filter { it.isNotEmpty() }
+
+        /** Minimal sanity check for one email address (full RFC validation is the SMTP server's job). */
+        fun isValidEmailAddress(addr: String): Boolean {
+            if (addr.length > 254 || addr.contains(' ') || addr.contains('\n') || addr.contains('\r')) return false
+            val at = addr.indexOf('@')
+            if (at <= 0 || at != addr.lastIndexOf('@') || at == addr.length - 1) return false
+            val domain = addr.substring(at + 1)
+            return domain.contains('.') && !domain.startsWith('.') && !domain.endsWith('.')
+        }
     }
 
     private var player: MediaPlayer? = null
@@ -711,7 +728,7 @@ class AlarmService : Service() {
         recordingUri = null
         if (wasRecording) {
             EventLog.add("VOICE RECORDING STOPPED")
-            // Email the finished recording to the same address, on the same SMTP account as the photo.
+            // Email the finished recording to the same recipients, on the same SMTP account as the photo.
             // The send happens on its own thread so it never blocks the service.
             if (uri != null || file != null) {
                 val baseName = recordingBaseName(uri, file)
@@ -1422,11 +1439,27 @@ class AlarmService : Service() {
 
     /** Reads and validates the shared email settings, returning null (and logging) when one is missing. */
     private fun emailDetailsOrNull(what: String): EmailDetails? {
-        val recipient = prefs.emailPhotoRecipient.trim()
-        if (recipient.isEmpty()) {
+        val recipientRaw = prefs.emailPhotoRecipient.trim()
+        // De-duplicated (case-insensitive) so "a@x.com;A@x.com" counts as one address.
+        val recipients = parseEmailRecipients(recipientRaw).distinctBy { it.lowercase() }
+        if (recipients.isEmpty()) {
             EventLog.add("$what skipped: no recipient address was set")
             return null
         }
+        if (recipients.size > Prefs.MAX_EMAIL_RECIPIENTS) {
+            EventLog.add(
+                "$what skipped: too many recipient addresses " +
+                    "(${recipients.size}, maximum ${Prefs.MAX_EMAIL_RECIPIENTS})"
+            )
+            return null
+        }
+        val invalid = recipients.firstOrNull { !isValidEmailAddress(it) }
+        if (invalid != null) {
+            EventLog.add("$what skipped: invalid recipient address \"$invalid\"")
+            return null
+        }
+        // Canonical ';'-joined form for SMTP (SmtpMailer splits it again per RCPT TO).
+        val recipient = recipients.take(Prefs.MAX_EMAIL_RECIPIENTS).joinToString(";")
         val sender = prefs.emailPhotoSender.trim()
         if (sender.isEmpty()) {
             EventLog.add("$what skipped: no sender address was set")
@@ -1641,7 +1674,7 @@ class AlarmService : Service() {
     // ------------------------------------------------------------------ recording email
 
     /**
-     * Emails a finished voice recording to the same address, on the same SMTP account, as the photo.
+     * Emails a finished voice recording to the same recipients, on the same SMTP account, as the photo.
      * The recording is split into numbered parts of at most [MAX_EMAIL_ATTACHMENT_BYTES] (16 MB) each
      * so every email stays under the provider's 25 MB limit. The TOTAL emailed for one recording is
      * also capped at [MAX_EMAIL_TOTAL_BYTES] (500 MB): once that much has been placed into parts the

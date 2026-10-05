@@ -44,10 +44,31 @@ object SmtpMailer {
         val username: String,
         val password: String,
         val from: String,
+        /** Semicolon-separated recipient addresses (up to 10); each gets its own RCPT TO. */
         val recipient: String,
         val subject: String,
         val body: String
-    )
+    ) {
+        /**
+         * Individual recipient addresses parsed from [recipient]: split on ';',
+         * trimmed, empties dropped, de-duplicated (case-insensitive), first
+         * [Prefs.MAX_EMAIL_RECIPIENTS] kept. Accepts commas as well so a pasted
+         * comma-separated list still works.
+         */
+        fun recipients(): List<String> {
+            val seen = LinkedHashSet<String>()
+            val out = ArrayList<String>()
+            for (raw in recipient.split(';', ',')) {
+                val addr = raw.trim()
+                if (addr.isEmpty()) continue
+                val key = addr.lowercase()
+                if (!seen.add(key)) continue
+                out.add(addr)
+                if (out.size >= Prefs.MAX_EMAIL_RECIPIENTS) break
+            }
+            return out
+        }
+    }
 
     /**
      * Sends [attachment] as an email attachment (its file name and MIME type are given by the caller).
@@ -92,8 +113,12 @@ object SmtpMailer {
             code = command(reader, writer, "MAIL FROM:<${config.from}>")
             if (code != 250) throw IOException("MAIL FROM was refused ($code)")
 
-            code = command(reader, writer, "RCPT TO:<${config.recipient}>")
-            if (code != 250 && code != 251) throw IOException("RCPT TO was refused ($code)")
+            val recipients = config.recipients()
+            if (recipients.isEmpty()) throw IOException("No recipient address was set")
+            for (addr in recipients) {
+                code = command(reader, writer, "RCPT TO:<$addr>")
+                if (code != 250 && code != 251) throw IOException("RCPT TO <$addr> was refused ($code)")
+            }
 
             code = command(reader, writer, "DATA")
             if (code != 354) throw IOException("DATA was refused ($code)")
@@ -197,7 +222,7 @@ object SmtpMailer {
         val body = dotStuff(config.body.replace("\r\n", "\n").replace("\n", CRLF))
         val sb = StringBuilder()
         sb.append("From: ").append(config.from).append(CRLF)
-        sb.append("To: ").append(config.recipient).append(CRLF)
+        sb.append("To: ").append(config.recipients().joinToString(", ")).append(CRLF)
         sb.append("Subject: ").append(config.subject).append(CRLF)
         sb.append("MIME-Version: 1.0").append(CRLF)
         sb.append("Content-Type: multipart/mixed; boundary=\"").append(boundary).append("\"").append(CRLF)

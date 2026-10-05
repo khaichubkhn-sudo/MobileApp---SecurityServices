@@ -70,9 +70,10 @@ first number, or capture one photo and email it - whether the phone is locked, u
 
 9. To use **Photo by email** / **audio recording email**, select **Capture one photo and email it** (or
    **Start microphone voice recording**) in the Volume Down action section. The email settings are **always**
-   shown in the same section: enter the recipient address, your own email address (the account emails are sent
+   shown in the same section: enter up to 10 recipient addresses separated by `;`
+   (e.g. `a@example.com;b@example.com`), your own email address (the account emails are sent
    from), an email app password, the SMTP server and port, and choose SSL/TLS or STARTTLS. The same account and
-   address are used for both the photo and the recordings. Allow the camera permission when Android asks.
+   recipients are used for both the photo and the recordings. Allow the camera permission when Android asks.
    Example (Gmail): turn on 2-Step Verification, create an **App password** (Google Account > Security >
    App passwords), paste it as the password, and use server `smtp.gmail.com` with port `465` and STARTTLS off.
    No server of ours is involved - the email is sent straight from the phone through your own account, so the
@@ -119,7 +120,7 @@ first number, or capture one photo and email it - whether the phone is locked, u
 * **Photo / recording by email**: select **Play the alarm sound + capture one photo and email it** for the combined alarm + photo action, **Capture one photo and email it** for photos only, or **Start microphone
    voice recording** for audio; the email settings are always shown in the same section. After the one-second
    Volume Down hold the app takes one photo with the main (back) camera and emails it as a JPEG attachment (at
-   most one photo every 2 seconds). When a recording finishes it is emailed to the same address as numbered parts
+   most one photo every 2 seconds). When a recording finishes it is emailed to the same recipients as numbered parts
    of at most 16 MB each; the total emailed for one recording is capped at 500 MB, and a recording (voice or video)
    is stopped automatically once it reaches 1 GB. Grant camera permission when Android asks. The app waits up to 2 minutes for internet:
    if none is available in that window the file is not sent and is not sent later. The last sent/failed result is

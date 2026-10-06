@@ -65,9 +65,10 @@ class AlarmService : Service() {
         private const val NOTIF_ID = 1001
 
         /**
-         * Runtime permission Android 11+ needs before a foreground service may run with the
-         * microphone foreground type (declared in AndroidManifest.xml). Without it, starting
-         * the foreground service with the microphone type fails on targetSdk >= 30 devices.
+         * Manifest-only permission (declared in AndroidManifest.xml) that allows the foreground
+         * service to use the microphone type. Install-time, NOT a runtime permission - never
+         * checked via checkSelfPermission() nor requested via requestPermissions(). Kept as a
+         * literal for documentation. The actual runtime requirement is RECORD_AUDIO.
          */
         private const val PERMISSION_FOREGROUND_MICROPHONE = "android.permission.FOREGROUND_SERVICE_MICROPHONE"
 
@@ -558,15 +559,14 @@ class AlarmService : Service() {
         if (updateNotification) refreshNotification()
     }
 
-    /** True when the runtime microphone permissions are granted, so [startRecording] can capture. */
+    /** True when the RECORD_AUDIO runtime permission is granted, so [startRecording] can capture. */
     fun recordingPermissionsReady(): Boolean {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) return false
-        if (Build.VERSION.SDK_INT >= 29 &&
-            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return false
+        // NOTE: FOREGROUND_SERVICE_MICROPHONE is manifest-only (install-time, already declared in
+        // AndroidManifest.xml), NOT a runtime permission - it must not be checked here. The actual
+        // FGS-microphone requirement is satisfied by RECORD_AUDIO + the manifest declaration.
         return true
     }
 

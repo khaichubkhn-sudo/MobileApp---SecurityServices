@@ -46,6 +46,7 @@ class MainActivity : Activity() {
         const val REQ_LOCATION_SMS = 105
         const val REQ_CALL_PHONE = 106
         const val REQ_CAMERA = 107
+        const val REQ_VIDEO_PERMS = 108
         const val RED = 0xFFC62828.toInt()
         const val GREEN = 0xFF2E7D32.toInt()
         const val BLUE = 0xFF1565C0.toInt()
@@ -56,9 +57,6 @@ class MainActivity : Activity() {
         const val PERM_POPUP_SNOOZE_MS = 30_000L
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-
-        /** Permission name as declared in AndroidManifest.xml (kept as a literal for compile safety). */
-        const val PERMISSION_FOREGROUND_MICROPHONE = "android.permission.FOREGROUND_SERVICE_MICROPHONE"
     }
 
     private lateinit var prefs: Prefs
@@ -634,7 +632,7 @@ class MainActivity : Activity() {
             }
             Prefs.ACTION_CALL -> requestCallPermission()
             Prefs.ACTION_EMAIL_PHOTO -> requestCameraPermission()
-            Prefs.ACTION_EMAIL_VIDEO -> requestCameraPermission()
+            Prefs.ACTION_EMAIL_VIDEO -> requestVideoPermissions()
             else -> requestCameraPermission()
         }
     }
@@ -883,29 +881,22 @@ class MainActivity : Activity() {
         startActivityForResult(i, REQ_RECORDING_FOLDER)
     }
 
-    /** True when the runtime microphone permissions needed for voice recording are granted. */
+    /** True when the runtime microphone permission needed for voice recording is granted. */
     private fun microphonePermissionsReady(): Boolean {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
-        if (Build.VERSION.SDK_INT >= 29 &&
-            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != PackageManager.PERMISSION_GRANTED
-        ) return false
+        // NOTE: FOREGROUND_SERVICE_MICROPHONE is a manifest-only (install-time) permission, NOT a
+        // runtime permission: it can never be granted via a dialog and checkSelfPermission() on it
+        // does not reflect user choice, so it must NOT be part of the "is everything granted" check.
+        // Including it here made micMissing() always true -> the option-6 popup kept reappearing
+        // even after the user granted Camera + Microphone.
         return true
     }
 
-    /** Permissions currently missing for voice recording, in the order they should be requested. */
+    /** Runtime permissions currently missing for voice recording, in the order they should be requested. */
     private fun missingRecordingPermissions(): List<String> {
         val missing = mutableListOf<String>()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             missing.add(Manifest.permission.RECORD_AUDIO)
-        }
-        // Without this, starting the foreground service with the microphone type fails on
-        // Android 11+ (and is mandatory for targetSdk 34): "Starting FGS with type microphone
-        // ... requires permissions". Declaring it in the manifest is not enough on modern
-        // Android; the user must also grant the permission at runtime.
-        if (Build.VERSION.SDK_INT >= 29 &&
-            checkSelfPermission(PERMISSION_FOREGROUND_MICROPHONE) != PackageManager.PERMISSION_GRANTED
-        ) {
-            missing.add(PERMISSION_FOREGROUND_MICROPHONE)
         }
         if (Build.VERSION.SDK_INT <= 28 &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
@@ -977,6 +968,25 @@ class MainActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
         }
+    }
+
+    /**
+     * Requests Camera + Microphone together for option 6 (video). A single combined system
+     * dialog avoids the old camera-then-mic sequence, where the 2s permission watchdog could
+     * re-show the reminder popup between the two grants and look like an endless loop.
+     * No-op when nothing is missing.
+     */
+    private fun requestVideoPermissions() {
+        val missing = mutableListOf<String>()
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.CAMERA)
+        }
+        missing.addAll(missingRecordingPermissions())
+        if (missing.isEmpty()) return
+        dismissPermissionPopup()
+        requestPermissions(missing.toTypedArray(), REQ_VIDEO_PERMS)
+        reRequestsRemaining = 2
+        pendingStartupFlows = false
     }
 
     /**
@@ -1077,18 +1087,19 @@ class MainActivity : Activity() {
             }
             Prefs.ACTION_EMAIL_VIDEO -> {
                 if (checkSelfPermission(Manifest.permission.CAMERA) !=
-                    PackageManager.PERMISSION_GRANTED
+                    PackageManager.PERMISSION_GRANTED ||
+                    missingRecordingPermissions().isNotEmpty()
                 ) {
                     if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) ||
+                        shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) ||
                         !prefs.cameraPermissionDeniedBefore
                     ) {
-                        requestCameraPermission()
+                        requestVideoPermissions()
                     } else {
                         openAppSettings()
                     }
                     return
                 }
-                requestRecordingPermissions()
             }
             else -> refresh()
         }
@@ -1204,7 +1215,7 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         if (!lockUnlocked) {
             // A permission answered while the gate re-engaged: defer the arm until unlock.
-            if (requestCode == REQ_MICROPHONE) armAfterPermission = true
+            if (requestCode == REQ_MICROPHONE || requestCode == REQ_VIDEO_PERMS) armAfterPermission = true
             pendingStartupFlows = true
             return
         }
@@ -1251,6 +1262,37 @@ class MainActivity : Activity() {
                 rearm()
             }
             if (granted && missingPermissionReminder() == null) {
+                permPopupSnoozedUntil = 0L
+                dismissPermissionPopup()
+            }
+            refresh()
+            return
+        }
+        if (requestCode == REQ_VIDEO_PERMS) {
+            // Combined Camera + Microphone answer for option 6 (video): log each outcome, mark
+            // a denial so a permanently-denied permission routes to Settings next time, and only
+            // re-request (bounded) the REMAINING runtime permissions - never FOREGROUND ones.
+            val denied = permissions.indices.filter {
+                grantResults.getOrNull(it) != PackageManager.PERMISSION_GRANTED
+            }.map { permissions[it] }
+            if (denied.isEmpty()) {
+                EventLog.add("camera and microphone permissions granted")
+            } else {
+                EventLog.add("video permission denied (${denied.joinToString()}) - video capture may be unavailable")
+                prefs.cameraPermissionDeniedBefore = true
+            }
+            val stillMissing = mutableListOf<String>()
+            if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                stillMissing.add(Manifest.permission.CAMERA)
+            }
+            stillMissing.addAll(missingRecordingPermissions())
+            if (stillMissing.isNotEmpty() && reRequestsRemaining > 0) {
+                reRequestsRemaining--
+                requestPermissions(stillMissing.toTypedArray(), REQ_VIDEO_PERMS)
+                return
+            }
+            if (stillMissing.isEmpty()) {
+                if (prefs.volumeDownAction == Prefs.ACTION_EMAIL_VIDEO) rearm()
                 permPopupSnoozedUntil = 0L
                 dismissPermissionPopup()
             }

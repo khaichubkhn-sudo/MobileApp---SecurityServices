@@ -53,6 +53,14 @@ class Prefs(context: Context) {
         get() = sp.getString("location_sms_prefix", "") ?: ""
         set(v) { sp.edit().putString("location_sms_prefix", v).apply() }
 
+    /**
+     * Minutes between repeated GPS-location SMS sends after a Volume Down trigger.
+     * 0 (default) means send once only - no periodic resending.
+     */
+    var locationSmsIntervalMinutes: Int
+        get() = sp.getInt("location_sms_interval_minutes", 0).coerceAtLeast(0)
+        set(v) { sp.edit().putInt("location_sms_interval_minutes", v.coerceAtLeast(0)).apply() }
+
     var lastLocationMessage: String
         get() = sp.getString("last_location_message", "") ?: ""
         set(v) { sp.edit().putString("last_location_message", v).apply() }

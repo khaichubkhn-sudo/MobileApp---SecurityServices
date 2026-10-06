@@ -341,6 +341,27 @@ class MainActivity : Activity() {
         }
         gap(locationSmsPrefix)
         actionCard.addView(locationSmsPrefix)
+        val locationSmsInterval = EditText(this).apply {
+            hint = "Repeat GPS SMS every N minutes (0 = send once only)"
+            setText(prefs.locationSmsIntervalMinutes.toString())
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            maxLines = 1
+            isSingleLine = true
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    val raw = s?.toString()?.trim() ?: ""
+                    if (raw.isEmpty()) {
+                        prefs.locationSmsIntervalMinutes = 0
+                        return
+                    }
+                    raw.toIntOrNull()?.let { prefs.locationSmsIntervalMinutes = it.coerceAtLeast(0) }
+                }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
+        gap(locationSmsInterval)
+        actionCard.addView(locationSmsInterval)
         actionCard.addView(tv(
             "The app waits for a valid location before sending one Google Maps link per number. " +
                 "Location must be enabled on the phone; Android does not allow apps to silently switch it on.",

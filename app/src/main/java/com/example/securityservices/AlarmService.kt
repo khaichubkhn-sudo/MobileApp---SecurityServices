@@ -261,6 +261,24 @@ class AlarmService : Service() {
     private var locationRequestActive = false
     private var locationListener: LocationListener? = null
     private var lastLocationTriggerAt = 0L
+    /**
+     * Repeating GPS-location SMS loop. Each run requests a FRESH location fix before
+     * sending (never reuses a cached fix), then re-schedules itself using the current
+     * [Prefs.locationSmsIntervalMinutes] value. 0 (or negative) stops the loop, which
+     * means "send once only".
+     */
+    private val periodicLocationSms = object : Runnable {
+        override fun run() {
+            val minutes = prefs.locationSmsIntervalMinutes
+            if (minutes <= 0) return
+            requestSingleLocationSms(isRepeat = true)
+            handler.postDelayed(this, minutes * 60_000L)
+        }
+    }
+
+    private fun cancelPeriodicLocationSms() {
+        handler.removeCallbacks(periodicLocationSms)
+    }
     private var lastCallTriggerAt = 0L
     private var lastPhotoEmailAt = 0L
     private var lastVideoEmailAt = 0L
@@ -450,6 +468,8 @@ class AlarmService : Service() {
         stopSound(updateNotification = false)
         stopRecording(updateNotification = false)
         stopVideoRecordingAndSend(updateNotification = false)
+        cancelPeriodicLocationSms()
+        finishLocationRequest()
         // A photo capture / email that is still running must be allowed to finish: keep the service
         // alive until the last send completes instead of killing it mid-send.
         if (pendingPhotoSends > 0) {
@@ -479,6 +499,7 @@ class AlarmService : Service() {
             // action; this is a safety net for an action that ended without either being called.
             handler.removeCallbacks(volumeGuard)
             stopFlashlightBlinking()
+            cancelPeriodicLocationSms()
             finishLocationRequest()
             restoreActionVolumes()
             try {
@@ -1417,6 +1438,7 @@ class AlarmService : Service() {
             try { resetVolumeHold() } catch (_: Exception) { }
             try { handler.removeCallbacks(volumeGuard) } catch (_: Exception) { }
             try { stopFlashlightBlinking() } catch (_: Exception) { }
+            try { cancelPeriodicLocationSms() } catch (_: Exception) { }
             try { finishLocationRequest() } catch (_: Exception) { }
             try { restoreActionVolumes() } catch (_: Exception) { }
             try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
@@ -1993,6 +2015,25 @@ class AlarmService : Service() {
 
     /** Gets one valid location, then sends one Google Maps link to each configured number. */
     private fun sendLocationIfConfigured() {
+        cancelPeriodicLocationSms()
+        requestSingleLocationSms(isRepeat = false)
+        // Start the periodic resend loop (if enabled): each run requests a FRESH GPS fix
+        // and sends it by SMS. 0 (default) means send once only - no periodic resending.
+        val minutes = prefs.locationSmsIntervalMinutes
+        if (minutes > 0) {
+            handler.postDelayed(periodicLocationSms, minutes * 60_000L)
+            EventLog.add("periodic GPS SMS every $minutes minute(s) enabled")
+        }
+    }
+
+    /**
+     * Requests one FRESH GPS fix, then sends one Google Maps link to each configured number.
+     * Every periodic repeat calls this again, so each SMS carries newly-updated GPS data.
+     *
+     * @param isRepeat true for scheduled repeats (skips the manual-trigger debounce and
+     * resets the per-send SMS allowance); false for a fresh Volume Down hold.
+     */
+    private fun requestSingleLocationSms(isRepeat: Boolean) {
         if (!prefs.sendLocationOnVolumeDown) return
         val numbers = prefs.locationPhoneNumbers
             .split(';')
@@ -2018,14 +2059,18 @@ class AlarmService : Service() {
             return
         }
         val now = SystemClock.elapsedRealtime()
-        if (locationRequestActive || now - lastLocationTriggerAt < LOCATION_TRIGGER_DEBOUNCE_MS) {
+        if (locationRequestActive) {
+            EventLog.add("GPS sharing skipped: previous location request still in progress")
+            return
+        }
+        if (!isRepeat && now - lastLocationTriggerAt < LOCATION_TRIGGER_DEBOUNCE_MS) {
             EventLog.add("GPS sharing ignored duplicate trigger")
             return
         }
         lastLocationTriggerAt = now
-        // This hold is accepted as a new trigger, so it starts with a full SMS allowance: clear the
-        // counter the send loop below reads, and drop the banner about the previous hold (that banner
-        // only ever reports on the hold being handled, and its limit no longer applies to this one).
+        // Each send (manual hold or periodic repeat) starts with a full SMS allowance: clear the
+        // counter the send loop below reads, and drop the banner about the previous send (that banner
+        // only ever reports on the send being handled, and its limit no longer applies to this one).
         smsMessagesSentForTrigger = 0
         prefs.lastSmsNotice = ""
         if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) &&
@@ -2064,7 +2109,7 @@ class AlarmService : Service() {
                         blocked++
                         EventLog.add(
                             "GPS SMS maximum limit reached: " +
-                                "$MAX_SMS_MESSAGES_PER_TRIGGER messages per Volume Down hold"
+                                "$MAX_SMS_MESSAGES_PER_TRIGGER messages per GPS send"
                         )
                         return@forEach
                     }
@@ -2077,15 +2122,15 @@ class AlarmService : Service() {
                     }
                 }
                 // The single log line above is easy to miss - every re-arm clears the log - so whenever
-                // this hold hit the cap, also raise the red banner on the app's main screen announcing
-                // that the maximum limit was reached. It is cleared at the start of the next Volume Down
-                // hold (see above), which is exactly when this limit stops applying to the next send.
+                // this send hit the cap, also raise the red banner on the app's main screen announcing
+                // that the maximum limit was reached. It is cleared at the start of the next GPS send
+                // (manual hold or periodic repeat), which is exactly when this limit stops applying.
                 if (blocked > 0) {
                     setSmsNotice(
                         "GPS SMS maximum limit reached: only $MAX_SMS_MESSAGES_PER_TRIGGER messages " +
-                            "can be sent per Volume Down hold - $sent sent, $blocked number" +
+                            "can be sent per GPS send - $sent sent, $blocked number" +
                             (if (blocked > 1) "s were" else " was") +
-                            " not sent. Hold Volume Down again for a new allowance.",
+                            " not sent. The next periodic send (or a new Volume Down hold) gets a new allowance.",
                         false
                     )
                 }
